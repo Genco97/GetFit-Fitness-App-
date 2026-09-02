@@ -1,8 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse } from "next/server";
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+import { supabaseUrl, supabaseKey } from "./config.js";
 
 export async function updateSession(request) {
   let supabaseResponse = NextResponse.next({ request: { headers: request.headers } });
