@@ -2304,8 +2304,8 @@ export default function App() {
   const [call, setCall] = useState(null); // {room, label, me}
 
   const T = profile?.theme === "light" ? LIGHT : DARK;
-  const uid = authSession?.user?.id || null; // primitive, stabil über Token-Refreshes hinweg
-  const owner = uid || "";
+  const authUid = authSession?.user?.id || null; // primitive, stabil über Token-Refreshes hinweg
+  const owner = authUid || "";
   const authEmail = authSession?.user?.email || "";
 
   const toast = useCallback((t) => {
@@ -2363,7 +2363,7 @@ export default function App() {
   useEffect(() => {
     (async () => {
       if (authSession === undefined) return; // Session-Check noch nicht abgeschlossen
-      if (!uid) { setProfile(null); setReady(true); return; }
+      if (!authUid) { setProfile(null); setReady(true); return; }
       const [p, w, r, j, c, pr, a] = await Promise.all([
         Local.get(K.profile), Local.get(K.workouts), Local.get(K.runs), Local.get(K.ropes),
         Local.get(K.custom), Local.get(K.prs), Local.get(K.active),
@@ -2378,7 +2378,7 @@ export default function App() {
 
       /* Stiller Abgleich mit der Cloud im Hintergrund – überschreibt nur, wenn dort
          tatsächlich etwas hinterlegt ist, damit ein leerer Server nichts löscht. */
-      const remote = await pullAll(uid).catch(() => null);
+      const remote = await pullAll(authUid).catch(() => null);
       /* Nur übernehmen, wenn die Cloud tatsächlich vollständige Einstellungen hat –
          sonst würde ein noch unvollständiges Profil (z. B. kurz nach Signup, bevor
          die Einstellungen geschrieben wurden) das gute lokale Profil zerstören. */
@@ -2390,7 +2390,7 @@ export default function App() {
       if (remote?.prs) { setPrs(remote.prs); Local.set(K.prs, remote.prs); }
       if (remote?.social) { setSocial(remote.social); Local.set(K.social(remote.profile.username), remote.social, true); }
     })();
-  }, [uid]);
+  }, [authUid]);
 
   /* --- Neues Konto angelegt (Onboarding) --- */
   const createProfile = async (p, session) => {
