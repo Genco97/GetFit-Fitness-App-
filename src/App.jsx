@@ -1,7 +1,10 @@
+"use client";
+
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
 } from "recharts";
+import { createClient } from "../utils/supabase/client.js";
 
 /* ============================================================================
    RIG DAILY — Training, Laufen, Seilspringen
@@ -151,13 +154,13 @@ const BASE_EX = [
 /* Zwei Schichten, ein Interface (S):
      Local  – window.storage (bzw. In-Memory als Notnagel). Sofort da, funktioniert
               immer, aber gerätegebunden.
-     Cloud  – Supabase-REST, optional. Sobald in den Einstellungen eine Projekt-URL
-              und ein anon key hinterlegt sind, spiegelt jeder Zugriff zusätzlich in
-              eine eigene Postgres-Tabelle – damit das Konto geräteübergreifend
-              funktioniert und die Daten auch außerhalb dieser Vorschau weiterleben.
-   Schema (im Supabase-SQL-Editor einmal anlegen):
+     Cloud  – Supabase, mit echter Auth-Session (E-Mail + Passwort). Sobald man
+              angemeldet ist, spiegelt jeder Zugriff zusätzlich in eine Postgres-
+              Tabelle – damit das Konto geräteübergreifend funktioniert und die
+              Daten auch nach dem Schließen des Tabs weiterleben.
+   Schema (bereits im Supabase-Projekt per Migration angelegt):
 
-     create table if not exists rig_kv (
+     create table public.rig_kv (
        owner text not null default '',
        key text not null,
        shared boolean not null default false,
@@ -165,13 +168,21 @@ const BASE_EX = [
        updated_at timestamptz not null default now(),
        primary key (owner, key, shared)
      );
-     alter table rig_kv enable row level security;
-     create policy "anon full access" on rig_kv for all using (true) with check (true);
+     create table public.profiles (
+       id uuid primary key references auth.users(id) on delete cascade,
+       username text not null unique,
+       emoji text not null default '🦍',
+       created_at timestamptz not null default now()
+     );
+     -- RLS: rig_kv nur für authentifizierte Nutzer, private Zeilen nur für den
+     -- Owner (auth.uid()), geteilte Zeilen (shared = true) für alle Angemeldeten.
+     -- profiles: für alle lesbar (auch anonym, für die Verfügbarkeitsprüfung beim
+     -- Registrieren), aber nur die eigene Zeile schreibbar.
 
-   "owner" trennt private Daten (Profil, Workouts, …) pro Benutzername, damit sich
-   zwei Leute nicht denselben Schlüssel teilen. Öffentliche Zeilen (Rangliste,
-   Freundschaften, Namensregister) tragen owner = "" und sind über den Key selbst
-   schon eindeutig (z. B. board:max). */
+   "owner" trennt private Daten (Profil-Einstellungen, Workouts, …) pro Konto –
+   und ist ab jetzt die auth.uid() des Besitzers, nicht mehr der Benutzername.
+   Öffentliche Zeilen (Rangliste, Freundschaften) tragen owner = "" und sind über
+   den Key selbst schon eindeutig (z. B. board:max). */
 const memStore = new Map();
 const mk = (k, s) => (s ? "S::" : "P::") + k;
 
@@ -210,105 +221,115 @@ const Local = {
   },
 };
 
-/* --- Supabase (optional) -------------------------------------------------- */
-let CFG = { url: "", key: "" };
+/* --- Supabase Auth + Cloud -------------------------------------------- */
+const supabase = createClient();
+
+let session = null; // aktuelle Auth-Session – wird von App() über onAuthStateChange gepflegt
 let cloudStatus = "unconfigured"; // unconfigured | ok | error
 const cloudListeners = new Set();
 const setCloudStatus = (s) => { cloudStatus = s; cloudListeners.forEach((fn) => fn(s)); };
 
-async function sbFetch(path, opts = {}) {
-  if (!CFG.url || !CFG.key) throw new Error("not-configured");
-  const res = await fetch(`${CFG.url.replace(/\/$/, "")}/rest/v1/${path}`, {
-    ...opts,
-    headers: { apikey: CFG.key, Authorization: `Bearer ${CFG.key}`, "Content-Type": "application/json", ...(opts.headers || {}) },
-  });
-  if (!res.ok) throw new Error(`supabase ${res.status}`);
-  const text = await res.text();
-  return text ? JSON.parse(text) : null;
-}
-async function cloudPing() {
-  try { await sbFetch("rig_kv?select=key&limit=1"); setCloudStatus("ok"); return true; }
-  catch { setCloudStatus("error"); return false; }
-}
 const Cloud = {
   async get(key, shared, owner = "") {
-    const rows = await sbFetch(`rig_kv?key=eq.${encodeURIComponent(key)}&shared=eq.${shared}&owner=eq.${encodeURIComponent(owner)}&select=value&limit=1`);
-    return rows?.[0]?.value ?? null;
+    const { data, error } = await supabase
+      .from("rig_kv").select("value")
+      .eq("key", key).eq("shared", shared).eq("owner", owner)
+      .maybeSingle();
+    if (error) throw error;
+    return data?.value ?? null;
   },
   async set(key, value, shared, owner = "") {
-    await sbFetch("rig_kv?on_conflict=owner,key,shared", {
-      method: "POST", headers: { Prefer: "resolution=merge-duplicates" },
-      body: JSON.stringify([{ owner, key, shared, value, updated_at: new Date().toISOString() }]),
-    });
+    const { error } = await supabase
+      .from("rig_kv")
+      .upsert({ owner, key, shared, value, updated_at: new Date().toISOString() }, { onConflict: "owner,key,shared" });
+    if (error) throw error;
   },
   async del(key, shared, owner = "") {
-    await sbFetch(`rig_kv?key=eq.${encodeURIComponent(key)}&shared=eq.${shared}&owner=eq.${encodeURIComponent(owner)}`, { method: "DELETE" });
+    const { error } = await supabase.from("rig_kv").delete().eq("key", key).eq("shared", shared).eq("owner", owner);
+    if (error) throw error;
   },
   async keys(prefix, shared, owner = "") {
-    const ownerClause = shared ? "" : `&owner=eq.${encodeURIComponent(owner)}`;
-    const rows = await sbFetch(`rig_kv?key=like.${encodeURIComponent(prefix)}*&shared=eq.${shared}${ownerClause}&select=key`);
-    return (rows || []).map((r) => r.key);
+    let q = supabase.from("rig_kv").select("key").eq("shared", shared).like("key", `${prefix}%`);
+    if (!shared) q = q.eq("owner", owner);
+    const { data, error } = await q;
+    if (error) throw error;
+    return (data || []).map((r) => r.key);
+  },
+  /* Registrierungs-/Freunde-Suche über das öffentliche Namensregister. */
+  async usernameTaken(username) {
+    const { data, error } = await supabase.from("profiles").select("id").ilike("username", username).maybeSingle();
+    if (error) throw error;
+    return !!data;
+  },
+  async findUsernames(term, excludeId) {
+    let q = supabase.from("profiles").select("username, emoji, created_at").ilike("username", `%${term}%`).limit(12);
+    if (excludeId) q = q.neq("id", excludeId);
+    const { data, error } = await q;
+    if (error) throw error;
+    return data || [];
+  },
+  async getProfileRow(id) {
+    const { data, error } = await supabase.from("profiles").select("username, emoji, created_at").eq("id", id).maybeSingle();
+    if (error) throw error;
+    return data;
+  },
+  async upsertProfileRow(id, username, emoji) {
+    const { error } = await supabase.from("profiles").upsert({ id, username, emoji });
+    if (error) throw error;
   },
 };
 
 /* S = einheitliche Fassade, die der Rest der App benutzt. Lesen: lokal zuerst
-   (sofort da), bei konfigurierter Cloud danach still mit dem Server abgleichen.
-   Schreiben: immer lokal, bei konfigurierter Cloud zusätzlich (best effort –
-   schlägt der Cloud-Schreibvorgang fehl, bleibt die App trotzdem benutzbar). */
+   (sofort da), bei aktiver Session danach still mit dem Server abgleichen.
+   Schreiben: immer lokal, bei aktiver Session zusätzlich (best effort – schlägt
+   der Cloud-Schreibvorgang fehl, bleibt die App trotzdem benutzbar). */
 const S = {
-  configured: () => !!(CFG.url && CFG.key),
+  configured: () => !!session,
   status: () => cloudStatus,
   onStatus(fn) { cloudListeners.add(fn); return () => cloudListeners.delete(fn); },
-  async loadConfig() {
-    const c = await Local.get("settings:supabase");
-    if (c?.url && c?.key) { CFG = c; return cloudPing(); }
-    return false;
-  },
-  async configure(url, key) {
-    CFG = { url: (url || "").trim(), key: (key || "").trim() };
-    await Local.set("settings:supabase", CFG);
-    if (!CFG.url || !CFG.key) { setCloudStatus("unconfigured"); return false; }
-    return cloudPing();
-  },
+  setSession(s) { session = s; setCloudStatus(s ? "ok" : "unconfigured"); },
   async get(key, shared = false, owner = "") {
     const local = await Local.get(key, shared);
     if (S.configured()) {
       try {
         const remote = await Cloud.get(key, shared, owner);
-        if (remote != null) { await Local.set(key, remote, shared); return remote; }
-      } catch { /* Cloud nicht erreichbar – lokaler Stand gilt */ }
+        if (remote != null) { await Local.set(key, remote, shared); setCloudStatus("ok"); return remote; }
+        setCloudStatus("ok");
+      } catch { setCloudStatus("error"); }
     }
     return local;
   },
   async set(key, value, shared = false, owner = "") {
     await Local.set(key, value, shared);
-    if (S.configured()) { try { await Cloud.set(key, value, shared, owner); } catch { /* lokal bleibt gültig */ } }
+    if (S.configured()) { try { await Cloud.set(key, value, shared, owner); setCloudStatus("ok"); } catch { setCloudStatus("error"); } }
     return true;
   },
   async del(key, shared = false, owner = "") {
     await Local.del(key, shared);
-    if (S.configured()) { try { await Cloud.del(key, shared, owner); } catch { /* egal */ } }
+    if (S.configured()) { try { await Cloud.del(key, shared, owner); setCloudStatus("ok"); } catch { setCloudStatus("error"); } }
     return true;
   },
   async keys(prefix, shared = false, owner = "") {
-    if (S.configured()) { try { return await Cloud.keys(prefix, shared, owner); } catch { /* Fallback unten */ } }
+    if (S.configured()) { try { const r = await Cloud.keys(prefix, shared, owner); setCloudStatus("ok"); return r; } catch { setCloudStatus("error"); } }
     return Local.keys(prefix, shared);
   },
 };
 
-/* Holt einen kompletten Datensatz aus der Cloud – für Login auf neuem Gerät
-   und für den stillen Abgleich beim Start. */
+/* Holt einen kompletten Datensatz aus der Cloud – für Login auf neuem Gerät und
+   für den stillen Abgleich beim Start. owner ist die auth.uid() des Kontos. */
 async function pullAll(owner) {
-  const [profile, workouts, runs, ropes, custom, prs, social] = await Promise.all([
+  const [profile, workouts, runs, ropes, custom, prs, profileRow] = await Promise.all([
     Cloud.get(K.profile, false, owner).catch(() => null),
     Cloud.get(K.workouts, false, owner).catch(() => null),
     Cloud.get(K.runs, false, owner).catch(() => null),
     Cloud.get(K.ropes, false, owner).catch(() => null),
     Cloud.get(K.custom, false, owner).catch(() => null),
     Cloud.get(K.prs, false, owner).catch(() => null),
-    Cloud.get(K.social(owner), true, "").catch(() => null),
+    Cloud.getProfileRow(owner).catch(() => null),
   ]);
-  return { profile, workouts, runs, ropes, custom, prs, social };
+  const social = profileRow ? await Cloud.get(K.social(profileRow.username), true, "").catch(() => null) : null;
+  const merged = profileRow ? { ...profile, username: profileRow.username, emoji: profileRow.emoji } : profile;
+  return { profile: merged, workouts, runs, ropes, custom, prs, social };
 }
 
 const K = {
@@ -320,7 +341,6 @@ const K = {
   prs: "log:prs",
   active: "active:workout",
   board: (u) => `board:${u}`,
-  claim: (u) => `claim:${u}`,
   social: (u) => `social:${u}`,
 };
 
@@ -622,40 +642,74 @@ function Empty({ title, hint, action }) {
 /* --- Onboarding --------------------------------------------------------- */
 const EMOJIS = ["🦍", "🔥", "🪨", "⚡", "🐺", "🦅", "🥋", "🧗", "🏃", "🪢", "💪", "🦈"];
 
-function Onboarding({ onDone, onLogin, cloudOn }) {
+const defaultSettings = () => ({
+  theme: "dark", restDefault: 90, weeklyGoal: 4,
+  privacy: { profilePublic: true, workoutsPublic: true, leaderboard: true, runsPublic: true },
+});
+
+function Onboarding({ onDone, onLogin }) {
   const T = useT();
   const [mode, setMode] = useState("new"); // new | login
   const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [emoji, setEmoji] = useState("🦍");
   const [err, setErr] = useState("");
+  const [info, setInfo] = useState("");
   const [busy, setBusy] = useState(false);
 
   const submitNew = async () => {
     const u = name.trim();
-    if (!/^[a-zA-Z0-9_]{3,16}$/.test(u)) {
-      return setErr("3–16 Zeichen, nur Buchstaben, Zahlen und _");
+    if (!/^[a-zA-Z0-9_]{3,16}$/.test(u)) return setErr("3–16 Zeichen, nur Buchstaben, Zahlen und _");
+    if (!/^\S+@\S+\.\S+$/.test(email.trim())) return setErr("Gültige E-Mail-Adresse eingeben.");
+    if (password.length < 6) return setErr("Passwort braucht mindestens 6 Zeichen.");
+    setBusy(true); setErr(""); setInfo("");
+    try {
+      const taken = await Cloud.usernameTaken(u);
+      if (taken) { setBusy(false); return setErr("Der Benutzername ist schon vergeben. Nimm einen anderen."); }
+      const { data, error } = await supabase.auth.signUp({
+        email: email.trim(), password, options: { data: { username: u, emoji } },
+      });
+      if (error) { setBusy(false); return setErr(error.message); }
+      if (data.session) {
+        await Cloud.upsertProfileRow(data.session.user.id, u, emoji);
+        setBusy(false);
+        onDone({ username: u, emoji, createdAt: Date.now(), ...defaultSettings() }, data.session);
+      } else {
+        setBusy(false);
+        setMode("login");
+        setInfo(`Bestätigungslink an ${email.trim()} geschickt. Danach hier mit E-Mail und Passwort anmelden.`);
+      }
+    } catch (e) {
+      setBusy(false); setErr(e?.message || "Unbekannter Fehler.");
     }
-    setBusy(true); setErr("");
-    const taken = await S.get(K.claim(u.toLowerCase()), true);
-    if (taken) { setBusy(false); return setErr("Der Benutzername ist schon vergeben. Nimm einen anderen."); }
-    await S.set(K.claim(u.toLowerCase()), { username: u, emoji, createdAt: Date.now() }, true);
-    onDone({
-      username: u, emoji, createdAt: Date.now(), theme: "dark",
-      restDefault: 90, weeklyGoal: 4,
-      privacy: { profilePublic: true, workoutsPublic: true, leaderboard: true, runsPublic: true },
-    });
   };
 
   const submitLogin = async () => {
-    const u = name.trim();
-    if (!u) return setErr("Benutzername eingeben.");
-    setBusy(true); setErr("");
-    const claim = await Cloud.get(K.claim(u.toLowerCase()), true, "").catch(() => null);
-    if (!claim) { setBusy(false); return setErr("Kein Konto mit diesem Namen in der Cloud gefunden."); }
-    const data = await pullAll(claim.username);
-    if (!data.profile) { setBusy(false); return setErr("Konto gefunden, aber keine Profildaten mehr vorhanden."); }
-    setBusy(false);
-    onLogin(data);
+    if (!/^\S+@\S+\.\S+$/.test(email.trim())) return setErr("Gültige E-Mail-Adresse eingeben.");
+    if (!password) return setErr("Passwort eingeben.");
+    setBusy(true); setErr(""); setInfo("");
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+      if (error) { setBusy(false); return setErr(error.message); }
+      const uid = data.session.user.id;
+      let row = await Cloud.getProfileRow(uid).catch(() => null);
+      if (!row) {
+        const meta = data.session.user.user_metadata || {};
+        const uname = meta.username || `nutzer${uid.slice(0, 6)}`;
+        const em = meta.emoji || "🦍";
+        await Cloud.upsertProfileRow(uid, uname, em);
+        row = { username: uname, emoji: em };
+      }
+      const pulled = await pullAll(uid);
+      const profile = pulled.profile && pulled.profile.theme
+        ? pulled.profile
+        : { username: row.username, emoji: row.emoji, createdAt: Date.now(), ...defaultSettings() };
+      setBusy(false);
+      onLogin({ ...pulled, profile, session: data.session });
+    } catch (e) {
+      setBusy(false); setErr(e?.message || "Unbekannter Fehler.");
+    }
   };
 
   return (
@@ -670,9 +724,22 @@ function Onboarding({ onDone, onLogin, cloudOn }) {
         </div>
 
         <div className="mb-5">
-          <Segmented value={mode} onChange={(v) => { setMode(v); setErr(""); }}
-            options={[{ value: "new", label: "Neues Konto" }, { value: "login", label: "Bestehendes Konto" }]} />
+          <Segmented value={mode} onChange={(v) => { setMode(v); setErr(""); setInfo(""); }}
+            options={[{ value: "new", label: "Neues Konto" }, { value: "login", label: "Anmelden" }]} />
         </div>
+
+        <Eyebrow>E-Mail</Eyebrow>
+        <input
+          value={email} onChange={(e) => setEmail(e.target.value)} placeholder="du@example.com" type="email"
+          className="w-full px-4 py-3 rounded-xl mb-4"
+          style={{ background: T.panel, color: T.text, border: `1px solid ${T.line}` }}
+        />
+        <Eyebrow>Passwort</Eyebrow>
+        <input
+          value={password} onChange={(e) => setPassword(e.target.value)} placeholder="mindestens 6 Zeichen" type="password"
+          className="w-full px-4 py-3 rounded-xl mb-6"
+          style={{ background: T.panel, color: T.text, border: `1px solid ${T.line}` }}
+        />
 
         {mode === "new" ? (
           <>
@@ -683,7 +750,7 @@ function Onboarding({ onDone, onLogin, cloudOn }) {
               style={{ background: T.panel, color: T.text, border: `1px solid ${err ? PLATE.red : T.line}` }}
             />
             <div className="text-xs mb-6" style={{ color: err ? PLATE.red : T.muted }}>
-              {err || "So finden dich deine Freunde in der Rangliste."}
+              {err || info || "So finden dich deine Freunde in der Rangliste."}
             </div>
 
             <Eyebrow>Zeichen</Eyebrow>
@@ -698,31 +765,15 @@ function Onboarding({ onDone, onLogin, cloudOn }) {
               {busy ? "Moment …" : "Konto anlegen"}
             </Btn>
             <div className="text-xs mt-4 text-center" style={{ color: T.muted }}>
-              Kein Passwort, keine E-Mail. Der Name gehört ab jetzt dir.
+              Geschützt mit E-Mail und Passwort über Supabase Auth.
             </div>
           </>
         ) : (
           <>
-            {!cloudOn && (
-              <Card className="p-4 mb-4" style={{ borderColor: PLATE.yellow }}>
-                <div className="text-sm" style={{ color: T.text }}>
-                  Dafür muss zuerst eine Supabase-Datenbank hinterlegt sein. Leg zunächst mit „Neues Konto“
-                  eins an, verbinde in Profil → Cloud-Datenbank Supabase, und melde dich danach auf dem
-                  anderen Gerät hier mit demselben Namen an.
-                </div>
-              </Card>
-            )}
-            <Eyebrow>Benutzername</Eyebrow>
-            <input
-              value={name} onChange={(e) => setName(e.target.value)} placeholder="dein bestehender Name"
-              disabled={!cloudOn}
-              className="w-full px-4 py-3 rounded-xl mb-1"
-              style={{ background: T.panel, color: T.text, border: `1px solid ${err ? PLATE.red : T.line}`, opacity: cloudOn ? 1 : 0.5 }}
-            />
-            <div className="text-xs mb-8" style={{ color: err ? PLATE.red : T.muted }}>
-              {err || "Holt Profil, Training, Läufe und Freunde aus der Cloud."}
+            <div className="text-xs mb-6" style={{ color: err ? PLATE.red : T.muted }}>
+              {err || info || "Meldet dich an und holt Profil, Training, Läufe und Freunde aus der Cloud."}
             </div>
-            <Btn onClick={submitLogin} disabled={busy || !cloudOn} className="w-full" style={{ padding: "16px" }}>
+            <Btn onClick={submitLogin} disabled={busy} className="w-full" style={{ padding: "16px" }}>
               {busy ? "Moment …" : "Anmelden"}
             </Btn>
           </>
@@ -1868,14 +1919,8 @@ function LeaderboardScreen({ ctx }) {
   const doSearch = async () => {
     const t = q.trim().toLowerCase();
     if (t.length < 2) return setSearchRes([]);
-    const keys = await S.keys("claim:", true);
-    const names = keys.map((k) => k.replace("claim:", "")).filter((n) => n.includes(t) && n !== profile.username.toLowerCase());
-    const found = [];
-    for (const n of names.slice(0, 12)) {
-      const c = await S.get(K.claim(n), true);
-      if (c) found.push(c);
-    }
-    setSearchRes(found);
+    const found = await Cloud.findUsernames(t, ctx.owner).catch(() => []);
+    setSearchRes(found.filter((c) => c.username.toLowerCase() !== profile.username.toLowerCase()));
   };
 
   const unit = exBoard ? "Wdh." : BOARDS.find((b) => b.value === metric).unit;
@@ -2076,32 +2121,17 @@ function FriendProfile({ entry, isFriend, onAdd, me }) {
 /* --- Profil / Einstellungen --------------------------------------------- */
 function ProfileScreen({ ctx }) {
   const T = useT();
-  const { profile, patchProfile, workouts, runs, ropes, prs, exportData, go, resetAll, startCall, cloudStatus, cloudConfig, connectCloud } = ctx;
+  const { profile, patchProfile, workouts, runs, ropes, prs, exportData, go, resetAll, startCall, cloudStatus, authEmail, signOut } = ctx;
   const agg = aggregate(workouts, runs, ropes);
   const streak = computeStreak(activeDays(workouts, runs, ropes));
   const [confirmReset, setConfirmReset] = useState(false);
-  const [dbUrl, setDbUrl] = useState(cloudConfig.url);
-  const [dbKey, setDbKey] = useState(cloudConfig.key);
-  const [dbBusy, setDbBusy] = useState(false);
-  const [showSql, setShowSql] = useState(false);
-  const SQL = `create table if not exists rig_kv (
-  owner text not null default '',
-  key text not null,
-  shared boolean not null default false,
-  value jsonb not null,
-  updated_at timestamptz not null default now(),
-  primary key (owner, key, shared)
-);
-alter table rig_kv enable row level security;
-create policy "anon full access" on rig_kv
-  for all using (true) with check (true);`;
-  const statusLabel = { unconfigured: "Nicht eingerichtet", ok: "Verbunden", error: "Nicht erreichbar" }[cloudStatus] || "Nicht eingerichtet";
+  const [signOutBusy, setSignOutBusy] = useState(false);
+  const statusLabel = { unconfigured: "Nicht angemeldet", ok: "Synchronisiert", error: "Sync-Fehler" }[cloudStatus] || "Nicht angemeldet";
   const statusColor = { unconfigured: T.muted, ok: PLATE.green, error: PLATE.red }[cloudStatus] || T.muted;
-  const doConnect = async () => {
-    setDbBusy(true);
-    const ok = await connectCloud(dbUrl, dbKey);
-    setDbBusy(false);
-    ctx.toast(ok ? { msg: "Verbunden. Deine Daten synchronisieren jetzt über Supabase." } : { kind: "error", msg: "Keine Verbindung. URL und anon key prüfen – RLS-Policy nicht vergessen." });
+  const doSignOut = async () => {
+    setSignOutBusy(true);
+    await signOut();
+    setSignOutBusy(false);
   };
 
   const Toggle = ({ label, hint, on, set }) => (
@@ -2185,34 +2215,17 @@ create policy "anon full access" on rig_kv
 
       <Card className="p-4 mb-4">
         <div className="flex items-center justify-between mb-3">
-          <Eyebrow>Cloud-Datenbank (Supabase)</Eyebrow>
+          <Eyebrow>Konto</Eyebrow>
           <span className="text-xs rig-num px-2 py-1 rounded-full" style={{ background: T.panel2, color: statusColor }}>{statusLabel}</span>
         </div>
-        <div className="text-xs mb-3" style={{ color: T.muted }}>
-          Optional. Damit funktioniert dein Konto auf mehreren Geräten und die Daten leben auch
-          außerhalb dieser Vorschau weiter. Ohne Supabase speichert die App wie bisher lokal.
+        <div className="text-sm mb-3" style={{ color: T.text }}>{authEmail}</div>
+        <div className="text-xs mb-4" style={{ color: T.muted }}>
+          Angemeldet über Supabase Auth. Deine Daten synchronisieren automatisch und sind auf
+          jedem Gerät verfügbar, auf dem du dich mit dieser E-Mail-Adresse anmeldest.
         </div>
-        <input value={dbUrl} onChange={(e) => setDbUrl(e.target.value)} placeholder="https://xxxx.supabase.co"
-          className="w-full px-3 py-2 rounded-lg mb-2 rig-num text-sm"
-          style={{ background: T.panel2, color: T.text, border: `1px solid ${T.line}` }} />
-        <input value={dbKey} onChange={(e) => setDbKey(e.target.value)} placeholder="anon public key" type="password"
-          className="w-full px-3 py-2 rounded-lg mb-3 rig-num text-sm"
-          style={{ background: T.panel2, color: T.text, border: `1px solid ${T.line}` }} />
-        <div className="flex gap-2">
-          <Btn className="flex-1" disabled={dbBusy || !dbUrl || !dbKey} onClick={doConnect}>{dbBusy ? "Prüfe …" : "Verbinden"}</Btn>
-          <Btn variant="ghost" onClick={() => setShowSql((s) => !s)}>{showSql ? "SQL verbergen" : "SQL anzeigen"}</Btn>
-        </div>
-        {showSql && (
-          <div className="mt-3 p-3 rounded-lg rig-num text-xs whitespace-pre-wrap" style={{ background: T.panel2, color: T.muted, lineHeight: 1.6 }}>
-            {SQL}
-          </div>
-        )}
-        <div className="text-xs mt-3" style={{ color: T.muted }}>
-          Einmalig im Supabase-Projekt unter „SQL Editor" ausführen, dann Projekt-URL und
-          anon key aus „Project Settings → API" hier eintragen. Läuft die Vorschau hier im
-          Chat und blockiert eine Sicherheitsschranke die Verbindung, greift automatisch
-          wieder der lokale Speicher – nichts geht verloren.
-        </div>
+        <Btn variant="ghost" className="w-full" disabled={signOutBusy} onClick={doSignOut}>
+          {signOutBusy ? "Moment …" : "Abmelden"}
+        </Btn>
       </Card>
 
       <div className="flex gap-2 mb-3">
@@ -2287,11 +2300,12 @@ export default function App() {
   const [detail, setDetail] = useState(null);
   const [toastMsg, setToastMsg] = useState(null);
   const [cloudStatusState, setCloudStatusState] = useState("unconfigured");
-  const [cloudConfig, setCloudConfigState] = useState({ url: "", key: "" });
+  const [authSession, setAuthSession] = useState(undefined); // undefined = wird noch geprüft, null = nicht angemeldet
   const [call, setCall] = useState(null); // {room, label, me}
 
   const T = profile?.theme === "light" ? LIGHT : DARK;
-  const owner = profile?.username || "";
+  const owner = authSession?.user?.id || "";
+  const authEmail = authSession?.user?.email || "";
 
   const toast = useCallback((t) => {
     setToastMsg(t);
@@ -2303,18 +2317,38 @@ export default function App() {
   /* --- Cloud-Verbindungsstatus live spiegeln --- */
   useEffect(() => S.onStatus(setCloudStatusState), []);
 
-  const connectCloud = useCallback(async (url, key) => {
-    const ok = await S.configure(url, key);
-    setCloudConfigState({ url, key });
-    setCloudStatusState(S.status());
-    return ok;
+  /* --- Auth-Session: einmal laden, danach auf Änderungen (Login, Logout,
+     Token-Refresh, Login in einem anderen Tab) reagieren. --- */
+  useEffect(() => {
+    let cancelled = false;
+    supabase.auth.getSession().then(({ data }) => {
+      if (cancelled) return;
+      S.setSession(data.session);
+      setAuthSession(data.session);
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
+      S.setSession(s);
+      setAuthSession(s);
+    });
+    return () => { cancelled = true; sub.subscription.unsubscribe(); };
   }, []);
 
-  /* --- Laden --- */
+  const signOut = useCallback(async () => {
+    await supabase.auth.signOut();
+    setProfile(null); setWorkouts([]); setRuns([]); setRopes([]); setCustom([]); setPrs({});
+    setActive(null); setBoard([]); setSocial({ friends: [], requests: [] }); setTab("home"); setDetail(null);
+    await Promise.all([
+      Local.del(K.profile), Local.del(K.workouts), Local.del(K.runs), Local.del(K.ropes),
+      Local.del(K.custom), Local.del(K.prs), Local.del(K.active),
+    ]);
+  }, []);
+
+  /* --- Laden, sobald die Session feststeht --- */
   useEffect(() => {
     (async () => {
-      await S.loadConfig();
-      setCloudConfigState(CFG);
+      if (authSession === undefined) return; // Session-Check noch nicht abgeschlossen
+      if (!authSession) { setProfile(null); setReady(true); return; }
+      const uid = authSession.user.id;
       const [p, w, r, j, c, pr, a] = await Promise.all([
         Local.get(K.profile), Local.get(K.workouts), Local.get(K.runs), Local.get(K.ropes),
         Local.get(K.custom), Local.get(K.prs), Local.get(K.active),
@@ -2329,21 +2363,28 @@ export default function App() {
 
       /* Stiller Abgleich mit der Cloud im Hintergrund – überschreibt nur, wenn dort
          tatsächlich etwas hinterlegt ist, damit ein leerer Server nichts löscht. */
-      if (p && S.configured()) {
-        const remote = await pullAll(p.username);
-        if (remote.profile) { setProfile(remote.profile); Local.set(K.profile, remote.profile); }
-        if (remote.workouts) { setWorkouts(remote.workouts); Local.set(K.workouts, remote.workouts); }
-        if (remote.runs) { setRuns(remote.runs); Local.set(K.runs, remote.runs); }
-        if (remote.ropes) { setRopes(remote.ropes); Local.set(K.ropes, remote.ropes); }
-        if (remote.custom) { setCustom(remote.custom); Local.set(K.custom, remote.custom); }
-        if (remote.prs) { setPrs(remote.prs); Local.set(K.prs, remote.prs); }
-        if (remote.social) { setSocial(remote.social); Local.set(K.social(p.username), remote.social, true); }
-      }
+      const remote = await pullAll(uid).catch(() => null);
+      if (remote?.profile) { setProfile(remote.profile); Local.set(K.profile, remote.profile); }
+      if (remote?.workouts) { setWorkouts(remote.workouts); Local.set(K.workouts, remote.workouts); }
+      if (remote?.runs) { setRuns(remote.runs); Local.set(K.runs, remote.runs); }
+      if (remote?.ropes) { setRopes(remote.ropes); Local.set(K.ropes, remote.ropes); }
+      if (remote?.custom) { setCustom(remote.custom); Local.set(K.custom, remote.custom); }
+      if (remote?.prs) { setPrs(remote.prs); Local.set(K.prs, remote.prs); }
+      if (remote?.social) { setSocial(remote.social); Local.set(K.social(remote.profile.username), remote.social, true); }
     })();
-  }, []);
+  }, [authSession]);
+
+  /* --- Neues Konto angelegt (Onboarding) --- */
+  const createProfile = async (p, session) => {
+    S.setSession(session); setAuthSession(session);
+    setProfile(p);
+    await S.set(K.profile, p, false, session.user.id);
+    await pushBoard(p, [], [], []);
+  };
 
   /* --- Login mit bestehendem Konto (neues Gerät) --- */
   const loginExisting = async (data) => {
+    S.setSession(data.session); setAuthSession(data.session);
     setProfile(data.profile); setWorkouts(data.workouts || []); setRuns(data.runs || []);
     setRopes(data.ropes || []); setCustom(data.custom || []); setPrs(data.prs || {});
     setSocial(data.social || { friends: [], requests: [] });
@@ -2384,12 +2425,12 @@ export default function App() {
   }, [profile]);
 
   /* --- Profil --- */
-  const createProfile = async (p) => {
-    setProfile(p); await S.set(K.profile, p, false, p.username); await pushBoard(p, [], [], []);
-  };
   const patchProfile = async (patch) => {
     const next = { ...profile, ...patch };
-    setProfile(next); await S.set(K.profile, next, false, next.username); await pushBoard(next);
+    setProfile(next);
+    await S.set(K.profile, next, false, owner);
+    if (patch.emoji) await Cloud.upsertProfileRow(owner, next.username, next.emoji).catch(() => {});
+    await pushBoard(next);
   };
 
   /* --- Übungen --- */
@@ -2535,11 +2576,11 @@ export default function App() {
   };
 
   const ctx = {
-    profile, workouts, runs, ropes, prs, active, exercises, board, social,
+    profile, workouts, runs, ropes, prs, active, exercises, board, social, owner,
     setActive, go, toast, patchProfile, startWorkout, repeatWorkout, finishWorkout, discardWorkout,
     deleteWorkout, addRun, deleteRun, addRope, deleteRope, addCustomExercise,
     refreshBoard, sendRequest, acceptRequest, declineRequest, removeFriend, exportData, resetAll,
-    startCall, cloudStatus: cloudStatusState, cloudConfig, connectCloud,
+    startCall, cloudStatus: cloudStatusState, authEmail, signOut,
   };
 
   if (!ready) {
@@ -2558,7 +2599,7 @@ export default function App() {
       <div className="rig min-h-screen" style={{ background: T.bg, color: T.text }}>
         <div className="mx-auto" style={{ maxWidth: 480, minHeight: "100vh", background: T.bg }}>
           {!profile ? (
-            <Onboarding onDone={createProfile} onLogin={loginExisting} cloudOn={S.configured()} />
+            <Onboarding onDone={createProfile} onLogin={loginExisting} />
           ) : (
             <>
               {tab === "home" && <Home ctx={ctx} />}
