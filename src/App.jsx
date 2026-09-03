@@ -2304,7 +2304,8 @@ export default function App() {
   const [call, setCall] = useState(null); // {room, label, me}
 
   const T = profile?.theme === "light" ? LIGHT : DARK;
-  const owner = authSession?.user?.id || "";
+  const uid = authSession?.user?.id || null; // primitive, stabil über Token-Refreshes hinweg
+  const owner = uid || "";
   const authEmail = authSession?.user?.email || "";
 
   const toast = useCallback((t) => {
@@ -2343,12 +2344,17 @@ export default function App() {
     ]);
   }, []);
 
-  /* --- Laden, sobald die Session feststeht --- */
+  /* --- Laden, sobald die Session feststeht ---
+     Hängt bewusst nur an der User-ID, nicht am ganzen Session-Objekt: onAuthStateChange
+     feuert bei jedem Token-Refresh (stündlich) mit einer neuen Session-Instanz für
+     denselben Nutzer – ein Reload aller Daten (inkl. des laufenden Workouts) wäre dabei
+     reine Verschwendung und könnte frische lokale Änderungen mit älterem Cloud-Stand
+     überschreiben. Bei echtem Login/Logout/Kontowechsel ändert sich die ID und der
+     Effekt läuft trotzdem. */
   useEffect(() => {
     (async () => {
       if (authSession === undefined) return; // Session-Check noch nicht abgeschlossen
-      if (!authSession) { setProfile(null); setReady(true); return; }
-      const uid = authSession.user.id;
+      if (!uid) { setProfile(null); setReady(true); return; }
       const [p, w, r, j, c, pr, a] = await Promise.all([
         Local.get(K.profile), Local.get(K.workouts), Local.get(K.runs), Local.get(K.ropes),
         Local.get(K.custom), Local.get(K.prs), Local.get(K.active),
@@ -2364,7 +2370,10 @@ export default function App() {
       /* Stiller Abgleich mit der Cloud im Hintergrund – überschreibt nur, wenn dort
          tatsächlich etwas hinterlegt ist, damit ein leerer Server nichts löscht. */
       const remote = await pullAll(uid).catch(() => null);
-      if (remote?.profile) { setProfile(remote.profile); Local.set(K.profile, remote.profile); }
+      /* Nur übernehmen, wenn die Cloud tatsächlich vollständige Einstellungen hat –
+         sonst würde ein noch unvollständiges Profil (z. B. kurz nach Signup, bevor
+         die Einstellungen geschrieben wurden) das gute lokale Profil zerstören. */
+      if (remote?.profile?.theme) { setProfile(remote.profile); Local.set(K.profile, remote.profile); }
       if (remote?.workouts) { setWorkouts(remote.workouts); Local.set(K.workouts, remote.workouts); }
       if (remote?.runs) { setRuns(remote.runs); Local.set(K.runs, remote.runs); }
       if (remote?.ropes) { setRopes(remote.ropes); Local.set(K.ropes, remote.ropes); }
@@ -2372,7 +2381,7 @@ export default function App() {
       if (remote?.prs) { setPrs(remote.prs); Local.set(K.prs, remote.prs); }
       if (remote?.social) { setSocial(remote.social); Local.set(K.social(remote.profile.username), remote.social, true); }
     })();
-  }, [authSession]);
+  }, [uid]);
 
   /* --- Neues Konto angelegt (Onboarding) --- */
   const createProfile = async (p, session) => {
@@ -2394,6 +2403,11 @@ export default function App() {
       Local.set(K.custom, data.custom || []), Local.set(K.prs, data.prs || {}),
       Local.set(K.social(data.profile.username), data.social || { friends: [], requests: [] }, true),
     ]);
+    /* Falls die Cloud noch keine (vollständigen) Profil-Einstellungen hatte
+       (z. B. erster Login nach E-Mail-Bestätigung), jetzt nachschreiben –
+       sonst überschreibt der nächste Hintergrund-Abgleich das gute lokale
+       Profil wieder mit einem unvollständigen. */
+    if (data.session?.user?.id) S.set(K.profile, data.profile, false, data.session.user.id);
     toast({ msg: `Willkommen zurück, ${data.profile.username}.` });
   };
 
