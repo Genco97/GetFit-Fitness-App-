@@ -2322,16 +2322,25 @@ export default function App() {
      Token-Refresh, Login in einem anderen Tab) reagieren. --- */
   useEffect(() => {
     let cancelled = false;
-    supabase.auth.getSession().then(({ data }) => {
+    const settle = (session) => {
       if (cancelled) return;
-      S.setSession(data.session);
-      setAuthSession(data.session);
-    });
+      cancelled = true; // erster Treffer gewinnt (Session-Check oder Timeout)
+      S.setSession(session);
+      setAuthSession(session);
+    };
+    /* Schlägt der Sitzungs-Check fehl (Netzwerk-/Browserproblem) oder hängt er,
+       darf die App nicht für immer im Lade-Kreisel bleiben – nach 8s einfach
+       als "nicht angemeldet" weitermachen, dann sieht man wenigstens die
+       Anmeldemaske statt einer toten Seite. */
+    const timeout = setTimeout(() => settle(null), 8000);
+    supabase.auth.getSession()
+      .then(({ data }) => { clearTimeout(timeout); settle(data.session); })
+      .catch(() => { clearTimeout(timeout); settle(null); });
     const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => {
       S.setSession(s);
       setAuthSession(s);
     });
-    return () => { cancelled = true; sub.subscription.unsubscribe(); };
+    return () => { cancelled = true; clearTimeout(timeout); sub.subscription.unsubscribe(); };
   }, []);
 
   const signOut = useCallback(async () => {
