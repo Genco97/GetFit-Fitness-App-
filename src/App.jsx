@@ -2285,7 +2285,51 @@ function TabBar({ tab, go, active }) {
 }
 
 /* ------------------------------------------------------------- 8 APP       */
+/* Sichtbares Absturz-Overlay statt einer toten/weißen Seite – wichtig, weil
+   wir bei Problemen sonst keine Konsole von den Geräten der Nutzer sehen. */
+function CrashOverlay({ error, debugInfo }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "#101218", color: "#EFEDE7", padding: 24, fontFamily: "system-ui, sans-serif", overflowY: "auto", zIndex: 9999 }}>
+      <div className="rig-display" style={{ fontSize: 20, marginBottom: 12 }}>
+        {error ? "App-Fehler" : "Lädt ungewöhnlich lange"}
+      </div>
+      <div style={{ fontSize: 13, marginBottom: 12, color: "#878D9C" }}>Bitte Screenshot hiervon schicken:</div>
+      <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", background: "#191C24", padding: 12, borderRadius: 8, fontSize: 11, color: error ? "#D6402F" : "#F2C230", lineHeight: 1.5 }}>
+        {error ? `${error.message || error}\n\n${error.stack || ""}` : JSON.stringify(debugInfo, null, 2)}
+      </pre>
+    </div>
+  );
+}
+
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error) { try { console.error(error); } catch { /* egal */ } }
+  render() { return this.state.error ? <CrashOverlay error={this.state.error} /> : this.props.children; }
+}
+
+function GlobalErrorWatcher() {
+  const [err, setErr] = useState(null);
+  useEffect(() => {
+    const onErr = (e) => setErr(e.error instanceof Error ? e.error : new Error(String(e.message || e)));
+    const onRej = (e) => setErr(e.reason instanceof Error ? e.reason : new Error(String(e.reason)));
+    window.addEventListener("error", onErr);
+    window.addEventListener("unhandledrejection", onRej);
+    return () => { window.removeEventListener("error", onErr); window.removeEventListener("unhandledrejection", onRej); };
+  }, []);
+  return err ? <CrashOverlay error={err} /> : null;
+}
+
 export default function App() {
+  return (
+    <ErrorBoundary>
+      <GlobalErrorWatcher />
+      <AppInner />
+    </ErrorBoundary>
+  );
+}
+
+function AppInner() {
   const [ready, setReady] = useState(false);
   const [profile, setProfile] = useState(null);
   const [workouts, setWorkouts] = useState([]);
@@ -2302,9 +2346,31 @@ export default function App() {
   const [cloudStatusState, setCloudStatusState] = useState("unconfigured");
   const [authSession, setAuthSession] = useState(undefined); // undefined = wird noch geprüft, null = nicht angemeldet
   const [call, setCall] = useState(null); // {room, label, me}
+  const [stuck, setStuck] = useState(null);
+
+  /* Hängt der Ladevorgang ungewöhnlich lange, sichtbaren Diagnose-Zustand
+     zeigen statt einer stillen, toten Seite. */
+  useEffect(() => {
+    if (ready) { setStuck(null); return; }
+    const t = setTimeout(() => {
+      setStuck({
+        ready, authSession: authSession === undefined ? "undefined (Session-Check läuft noch)" : authSession,
+        hasSupabaseGlobal: typeof supabase !== "undefined", hasWindow: typeof window !== "undefined",
+        userAgent: typeof navigator !== "undefined" ? navigator.userAgent : null,
+        time: new Date().toISOString(),
+      });
+    }, 6000);
+    return () => clearTimeout(t);
+  }, [ready, authSession]);
 
   const T = profile?.theme === "light" ? LIGHT : DARK;
-  const authUid = authSession?.user?.id || null; // primitive, stabil über Token-Refreshes hinweg
+  /* undefined = Sitzungs-Check läuft noch, null = geprüft und nicht angemeldet,
+     sonst die auth.uid() – als eigener Zustand, damit "noch am Prüfen" und
+     "geprüft, nicht angemeldet" sich unterscheiden. Beides auf null zu mappen
+     hätte den Lade-Effekt unten (hängt an [authUid]) nie neu auslösen lassen,
+     wenn die Prüfung mit "nicht angemeldet" endet – die App blieb dann für
+     jeden ohne bestehende Sitzung für immer im Lade-Kreisel hängen. */
+  const authUid = authSession === undefined ? undefined : (authSession?.user?.id || null);
   const owner = authUid || "";
   const authEmail = authSession?.user?.email || "";
 
@@ -2362,7 +2428,7 @@ export default function App() {
      Effekt läuft trotzdem. */
   useEffect(() => {
     (async () => {
-      if (authSession === undefined) return; // Session-Check noch nicht abgeschlossen
+      if (authUid === undefined) return; // Session-Check noch nicht abgeschlossen
       if (!authUid) { setProfile(null); setReady(true); return; }
       const [p, w, r, j, c, pr, a] = await Promise.all([
         Local.get(K.profile), Local.get(K.workouts), Local.get(K.runs), Local.get(K.ropes),
@@ -2607,6 +2673,7 @@ export default function App() {
   };
 
   if (!ready) {
+    if (stuck) return <CrashOverlay debugInfo={stuck} />;
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ background: DARK.bg }}>
         <style>{FONT_CSS}</style>
