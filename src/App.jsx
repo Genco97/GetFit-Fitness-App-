@@ -129,6 +129,41 @@ function beep() {
   try { navigator.vibrate?.([120, 60, 120]); } catch { /* ignorieren */ }
 }
 
+function timeAgo(ts) {
+  const s = Math.floor((Date.now() - ts) / 1000);
+  if (s < 60) return "gerade eben";
+  const m = Math.floor(s / 60);
+  if (m < 60) return `vor ${m} Min.`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `vor ${h} Std.`;
+  const d = Math.floor(h / 24);
+  return `vor ${d} Tag${d === 1 ? "" : "en"}`;
+}
+
+/* Bild vor dem Speichern client-seitig verkleinern – Fotos landen als JSON
+   im Key-Value-Store, ohne Verkleinerung wären die Zeilen viel zu groß. */
+function resizeImageFile(file, maxW = 640, quality = 0.6) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = reject;
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = reject;
+      img.onload = () => {
+        const scale = Math.min(1, maxW / img.width);
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 /* ------------------------------------------------------- 3 ÜBUNGSDATENBANK */
 /* type: "reps" = Körpergewicht (nur Wdh.), "weight" = Wdh. + kg, "time" = Sekunden */
 const CATS = ["Brust", "Rücken", "Beine", "Schultern", "Arme", "Bauch", "Ganzkörper"];
@@ -342,7 +377,19 @@ const K = {
   active: "active:workout",
   board: (u) => `board:${u}`,
   social: (u) => `social:${u}`,
+  notif: (u) => `notif:${u}`,
+  chat: (a, b) => `chat:${[a, b].sort().join("~")}`,
+  feed: (u) => `feed:${u}`,
 };
+
+/* Legt eine Benachrichtigung im (geteilten) Postfach eines anderen Nutzers ab –
+   z. B. bei einer Freundschaftsanfrage oder einer neuen Chat-Nachricht. */
+async function pushNotification(toUsername, notif) {
+  const key = K.notif(toUsername);
+  const cur = (await S.get(key, true)) || { items: [] };
+  const items = [{ id: uid(), read: false, createdAt: Date.now(), ...notif }, ...(cur.items || [])].slice(0, 50);
+  await S.set(key, { items }, true);
+}
 
 /* ------------------------------------------- 5 AGGREGATION / REKORDE / STREAK */
 function workoutTotals(w) {
@@ -2027,12 +2074,10 @@ function Podium({ rows, me, unit, decimals, color, onOpen }) {
 
 function LeaderboardScreen({ ctx }) {
   const T = useT();
-  const { profile, board, refreshBoard, social, sendRequest, acceptRequest, declineRequest, removeFriend, toast } = ctx;
+  const { profile, board, refreshBoard, social, sendRequest, go } = ctx;
   const [metric, setMetric] = useState("workouts");
   const [scope, setScope] = useState("alle");
   const [exBoard, setExBoard] = useState("");
-  const [q, setQ] = useState("");
-  const [searchRes, setSearchRes] = useState(null);
   const [openFriend, setOpenFriend] = useState(null);
 
   useEffect(() => { refreshBoard(); }, [refreshBoard]);
@@ -2053,13 +2098,6 @@ function LeaderboardScreen({ ctx }) {
     board.forEach((b) => Object.keys(b.perExercise || {}).forEach((n) => s.add(n)));
     return [...s].sort();
   }, [board]);
-
-  const doSearch = async () => {
-    const t = q.trim().toLowerCase();
-    if (t.length < 2) return setSearchRes([]);
-    const found = await Cloud.findUsernames(t, ctx.owner).catch(() => []);
-    setSearchRes(found.filter((c) => c.username.toLowerCase() !== profile.username.toLowerCase()));
-  };
 
   const unit = exBoard ? "Wdh." : BOARDS.find((b) => b.value === metric).unit;
   const color = exBoard ? PLATE.yellow : BOARDS.find((b) => b.value === metric).color;
@@ -2137,63 +2175,12 @@ function LeaderboardScreen({ ctx }) {
         </div>
       )}
 
-      {/* Freunde */}
-      <div className="mt-8">
-        <Eyebrow>Freunde finden</Eyebrow>
-        <div className="flex gap-2 mb-3">
-          <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && doSearch()}
-            placeholder="Benutzername" className="flex-1 px-4 py-3 rounded-xl"
-            style={{ background: T.panel, color: T.text, border: `1px solid ${T.line}` }} />
-          <Btn variant="quiet" onClick={doSearch}>Suchen</Btn>
-        </div>
-        {searchRes?.length === 0 && <div className="text-xs mb-3" style={{ color: T.muted }}>Keinen Treffer gefunden.</div>}
-        {searchRes?.map((u) => {
-          const isFriend = friends.includes(u.username);
-          return (
-            <Card key={u.username} className="p-3 mb-2">
-              <div className="flex items-center gap-3">
-                <span className="text-lg">{u.emoji}</span>
-                <span className="flex-1 text-sm" style={{ color: T.text }}>{u.username}</span>
-                {isFriend
-                  ? <span className="text-xs" style={{ color: PLATE.green }}>befreundet</span>
-                  : <Btn variant="quiet" style={{ padding: "8px 12px" }} onClick={() => sendRequest(u.username)}>Anfrage senden</Btn>}
-              </div>
-            </Card>
-          );
-        })}
-
-        {(social.requests || []).length > 0 && (
-          <>
-            <Eyebrow color={PLATE.yellow}>Offene Anfragen</Eyebrow>
-            {social.requests.map((u) => (
-              <Card key={u} className="p-3 mb-2">
-                <div className="flex items-center gap-2">
-                  <span className="flex-1 text-sm" style={{ color: T.text }}>{u}</span>
-                  <Btn style={{ padding: "8px 12px" }} onClick={() => acceptRequest(u)}>Annehmen</Btn>
-                  <Btn variant="ghost" style={{ padding: "8px 12px" }} onClick={() => declineRequest(u)}>Ablehnen</Btn>
-                </div>
-              </Card>
-            ))}
-          </>
-        )}
-
-        {friends.length > 0 && (
-          <>
-            <Eyebrow>Deine Freunde</Eyebrow>
-            {friends.map((u) => (
-              <Card key={u} className="p-3 mb-2">
-                <div className="flex items-center gap-2">
-                  <span className="flex-1 text-sm truncate" style={{ color: T.text }}>{u}</span>
-                  <button onClick={() => ctx.startCall(roomFor1v1(profile.username, u), `1:1 · du & ${u}`)}
-                    className="text-xs px-2 py-2 rounded-lg" style={{ background: T.panel2, color: PLATE.blue }}>📹</button>
-                  <button onClick={() => setOpenFriend(board.find((b) => b.username === u) || { username: u })}
-                    className="text-xs px-3 py-2 rounded-lg" style={{ background: T.panel2, color: T.text }}>Profil</button>
-                  <button onClick={() => removeFriend(u)} className="text-xs px-2" style={{ color: PLATE.red }}>Entfernen</button>
-                </div>
-              </Card>
-            ))}
-          </>
-        )}
+      {/* Freunde verwalten (finden, Anfragen, Chat) sind jetzt im Community-Tab. */}
+      <div className="mt-8 mb-2 text-center">
+        <button onClick={() => go("community")} className="text-xs px-4 py-2 rounded-full inline-block"
+          style={{ background: T.panel2, color: T.muted, border: `1px solid ${T.line}` }}>
+          Freunde &amp; Chat im Community-Tab ◆
+        </button>
       </div>
 
       <Sheet open={!!openFriend} onClose={() => setOpenFriend(null)} title={openFriend?.username || ""}>
@@ -2263,6 +2250,295 @@ function FriendProfile({ entry, isFriend, onAdd, me }) {
         </Card>
       )}
       {!isFriend && <Btn className="w-full" onClick={onAdd}>Freundschaftsanfrage senden</Btn>}
+    </div>
+  );
+}
+
+/* --- Community: Feed, Freunde, Chat, Benachrichtigungen ----------------- */
+const NOTIF_ICON = { friend_request: "🤝", friend_accept: "✅", chat: "💬" };
+
+function ChatSheet({ open, onClose, friend, me, ctx }) {
+  const T = useT();
+  const [messages, setMessages] = useState([]);
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const scrollRef = useRef(null);
+
+  useEffect(() => {
+    if (!open || !friend) return;
+    let stop = false;
+    const load = async () => { const msgs = await ctx.loadChat(friend); if (!stop) setMessages(msgs); };
+    load();
+    const id = setInterval(load, 4000);
+    return () => { stop = true; clearInterval(id); };
+  }, [open, friend, ctx]);
+
+  useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [messages]);
+
+  const send = async () => {
+    const t = text.trim();
+    if (!t || sending) return;
+    setSending(true); setText("");
+    const msgs = await ctx.sendMessage(friend, t);
+    if (msgs) setMessages(msgs);
+    setSending(false);
+  };
+
+  return (
+    <Sheet open={open} onClose={onClose} title={friend ? `Chat · ${friend}` : "Chat"}>
+      <div ref={scrollRef} className="flex flex-col gap-2 mb-3 overflow-y-auto rig-scroll" style={{ maxHeight: "50vh" }}>
+        {messages.length === 0 && (
+          <div className="text-xs text-center py-6" style={{ color: T.muted }}>Noch keine Nachrichten. Schreib als Erstes.</div>
+        )}
+        {messages.map((m) => {
+          const mine = m.from === me;
+          return (
+            <div key={m.id} className="flex" style={{ justifyContent: mine ? "flex-end" : "flex-start" }}>
+              <div className="px-3 py-2 rounded-xl text-sm" style={{ maxWidth: "78%", background: mine ? PLATE.yellow : T.panel2, color: mine ? "#14161B" : T.text }}>
+                {m.text}
+                <div className="text-[10px] mt-1" style={{ color: mine ? "#14161B99" : T.muted }}>{timeAgo(m.createdAt)}</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="flex gap-2">
+        <input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()}
+          placeholder="Nachricht schreiben …" className="flex-1 px-4 py-3 rounded-xl"
+          style={{ background: T.panel, color: T.text, border: `1px solid ${T.line}` }} />
+        <Btn onClick={send} disabled={sending}>Senden</Btn>
+      </div>
+    </Sheet>
+  );
+}
+
+function NotificationsSheet({ open, onClose, notifications }) {
+  const T = useT();
+  return (
+    <Sheet open={open} onClose={onClose} title="Benachrichtigungen">
+      {notifications.length === 0 && <Empty title="Noch nichts los" hint="Freundschaftsanfragen und Nachrichten erscheinen hier." />}
+      {notifications.map((n) => (
+        <Card key={n.id} className="p-3 mb-2" style={!n.read ? { borderColor: PLATE.yellow } : undefined}>
+          <div className="flex items-start gap-3">
+            <span className="text-lg">{NOTIF_ICON[n.type] || "🔔"}</span>
+            <div className="flex-1">
+              <div className="text-sm" style={{ color: T.text }}>{n.text}</div>
+              <div className="text-xs mt-1" style={{ color: T.muted }}>{timeAgo(n.createdAt)}</div>
+            </div>
+          </div>
+        </Card>
+      ))}
+    </Sheet>
+  );
+}
+
+function PostComposer({ onPost }) {
+  const T = useT();
+  const [text, setText] = useState("");
+  const [image, setImage] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef(null);
+
+  const pickImage = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    try { setImage(await resizeImageFile(file)); } catch { /* Bild ließ sich nicht lesen */ }
+  };
+
+  const submit = async () => {
+    if (!text.trim() && !image) return;
+    setBusy(true);
+    await onPost(text, image);
+    setText(""); setImage(null); setBusy(false);
+  };
+
+  return (
+    <Card className="p-4 mb-5">
+      <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="Form, Essen, Fortschritt – was gibt's Neues?"
+        rows={3} className="w-full px-3 py-2 rounded-xl text-sm mb-3 rig-scroll"
+        style={{ background: T.panel2, color: T.text, border: `1px solid ${T.line}`, resize: "none" }} />
+      {image && (
+        <div className="relative mb-3">
+          <img src={image} alt="" className="w-full rounded-xl" style={{ maxHeight: 220, objectFit: "cover" }} />
+          <button onClick={() => setImage(null)} className="absolute top-2 right-2 text-xs px-2 py-1 rounded-lg"
+            style={{ background: "rgba(6,7,10,.7)", color: "#EFEDE7" }}>✕</button>
+        </div>
+      )}
+      <div className="flex gap-2">
+        <input ref={fileRef} type="file" accept="image/*" hidden onChange={pickImage} />
+        <Btn variant="quiet" onClick={() => fileRef.current?.click()}>📷 Foto</Btn>
+        <div className="flex-1" />
+        <Btn onClick={submit} disabled={busy || (!text.trim() && !image)}>Posten</Btn>
+      </div>
+    </Card>
+  );
+}
+
+function PostCard({ post, me, onLike, onDelete, onOpenAuthor }) {
+  const T = useT();
+  const liked = (post.likes || []).includes(me);
+  return (
+    <Card className="p-4 mb-3">
+      <div className="flex items-center gap-2 mb-3">
+        <button onClick={onOpenAuthor} className="text-lg">{post.authorEmoji || "🦍"}</button>
+        <button onClick={onOpenAuthor} className="flex-1 text-sm text-left" style={{ color: T.text, fontWeight: 600 }}>
+          {post.authorUsername}{post.authorUsername === me && " · du"}
+        </button>
+        <span className="text-xs" style={{ color: T.muted }}>{timeAgo(post.createdAt)}</span>
+      </div>
+      {post.text && <div className="text-sm mb-3" style={{ color: T.text, whiteSpace: "pre-wrap" }}>{post.text}</div>}
+      {post.image && <img src={post.image} alt="" className="w-full rounded-xl mb-3" style={{ maxHeight: 320, objectFit: "cover" }} />}
+      <div className="flex items-center gap-4">
+        <button onClick={onLike} className="text-sm flex items-center gap-1" style={{ color: liked ? PLATE.red : T.muted }}>
+          {liked ? "❤️" : "🤍"} {(post.likes || []).length > 0 ? post.likes.length : ""}
+        </button>
+        {post.authorUsername === me && (
+          <button onClick={onDelete} className="text-xs" style={{ color: T.muted }}>Löschen</button>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function CommunityScreen({ ctx }) {
+  const T = useT();
+  const {
+    profile, board, social, sendRequest, acceptRequest, declineRequest, removeFriend,
+    feed, refreshFeed, addPost, toggleLike, deletePost,
+    notifications, refreshNotifications, markNotificationsRead, refreshBoard,
+  } = ctx;
+  const [view, setView] = useState("feed");
+  const [feedScope, setFeedScope] = useState("freunde");
+  const [q, setQ] = useState("");
+  const [searchRes, setSearchRes] = useState(null);
+  const [openFriend, setOpenFriend] = useState(null);
+  const [chatFriend, setChatFriend] = useState(null);
+  const [notifOpen, setNotifOpen] = useState(false);
+
+  useEffect(() => { refreshBoard(); refreshFeed(); refreshNotifications(); }, [refreshBoard, refreshFeed, refreshNotifications]);
+
+  const friends = social.friends || [];
+  const unread = notifications.filter((n) => !n.read).length;
+
+  const doSearch = async () => {
+    const t = q.trim().toLowerCase();
+    if (t.length < 2) return setSearchRes([]);
+    const found = await Cloud.findUsernames(t, ctx.owner).catch(() => []);
+    setSearchRes(found.filter((c) => c.username.toLowerCase() !== profile.username.toLowerCase()));
+  };
+
+  const visiblePosts = feedScope === "freunde"
+    ? feed.filter((p) => p.authorUsername === profile.username || friends.includes(p.authorUsername))
+    : feed;
+
+  const openNotifications = () => { setNotifOpen(true); markNotificationsRead(); };
+
+  return (
+    <div className="px-5 pt-6 pb-28 rig-fade">
+      <div className="flex items-center justify-between mb-1">
+        <div className="rig-display text-3xl" style={{ color: T.text }}>Community</div>
+        <button onClick={openNotifications} className="relative text-xl px-2 py-1">
+          🔔
+          {unread > 0 && (
+            <span className="absolute top-0 right-0 rig-num text-[10px] px-1.5 py-0.5 rounded-full"
+              style={{ background: PLATE.red, color: "#fff", minWidth: 16, textAlign: "center" }}>{unread}</span>
+          )}
+        </button>
+      </div>
+      <div className="text-sm mb-5" style={{ color: T.muted }}>Feed, Freunde und Chat an einem Ort.</div>
+
+      <div className="mb-5">
+        <Segmented value={view} onChange={setView}
+          options={[{ value: "feed", label: "Feed" }, { value: "friends", label: `Freunde (${friends.length})` }]} />
+      </div>
+
+      {view === "feed" && (
+        <>
+          <PostComposer onPost={addPost} />
+          <div className="mb-4">
+            <Segmented value={feedScope} onChange={setFeedScope}
+              options={[{ value: "freunde", label: "Freunde" }, { value: "alle", label: "Alle" }]} />
+          </div>
+          {visiblePosts.length === 0 && (
+            <Empty title="Noch nichts gepostet" hint="Teil deine Form, dein Essen oder deinen Fortschritt mit deinen Freunden." />
+          )}
+          {visiblePosts.map((p) => (
+            <PostCard key={p.id} post={p} me={profile.username}
+              onLike={() => toggleLike(p.authorUsername, p.id)}
+              onDelete={() => deletePost(p.id)}
+              onOpenAuthor={() => p.authorUsername !== profile.username && setOpenFriend(board.find((b) => b.username === p.authorUsername) || { username: p.authorUsername, emoji: p.authorEmoji })} />
+          ))}
+        </>
+      )}
+
+      {view === "friends" && (
+        <>
+          <Eyebrow>Freunde finden</Eyebrow>
+          <div className="flex gap-2 mb-3">
+            <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === "Enter" && doSearch()}
+              placeholder="Benutzername" className="flex-1 px-4 py-3 rounded-xl"
+              style={{ background: T.panel, color: T.text, border: `1px solid ${T.line}` }} />
+            <Btn variant="quiet" onClick={doSearch}>Suchen</Btn>
+          </div>
+          {searchRes?.length === 0 && <div className="text-xs mb-3" style={{ color: T.muted }}>Keinen Treffer gefunden.</div>}
+          {searchRes?.map((u) => {
+            const isFriend = friends.includes(u.username);
+            return (
+              <Card key={u.username} className="p-3 mb-2">
+                <div className="flex items-center gap-3">
+                  <span className="text-lg">{u.emoji}</span>
+                  <span className="flex-1 text-sm" style={{ color: T.text }}>{u.username}</span>
+                  {isFriend
+                    ? <span className="text-xs" style={{ color: PLATE.green }}>befreundet</span>
+                    : <Btn variant="quiet" style={{ padding: "8px 12px" }} onClick={() => sendRequest(u.username)}>Anfrage senden</Btn>}
+                </div>
+              </Card>
+            );
+          })}
+
+          {(social.requests || []).length > 0 && (
+            <>
+              <Eyebrow color={PLATE.yellow}>Offene Anfragen</Eyebrow>
+              {social.requests.map((u) => (
+                <Card key={u} className="p-3 mb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="flex-1 text-sm" style={{ color: T.text }}>{u}</span>
+                    <Btn style={{ padding: "8px 12px" }} onClick={() => acceptRequest(u)}>Annehmen</Btn>
+                    <Btn variant="ghost" style={{ padding: "8px 12px" }} onClick={() => declineRequest(u)}>Ablehnen</Btn>
+                  </div>
+                </Card>
+              ))}
+            </>
+          )}
+
+          <Eyebrow>Deine Freunde</Eyebrow>
+          {friends.length === 0 && (
+            <div className="text-xs mb-3" style={{ color: T.muted }}>Noch keine Freunde – oben suchen und Anfrage senden.</div>
+          )}
+          {friends.map((u) => (
+            <Card key={u} className="p-3 mb-2">
+              <div className="flex items-center gap-2">
+                <span className="flex-1 text-sm truncate" style={{ color: T.text }}>{u}</span>
+                <button onClick={() => setChatFriend(u)} className="text-xs px-2 py-2 rounded-lg" style={{ background: T.panel2, color: PLATE.yellow }}>💬</button>
+                <button onClick={() => ctx.startCall(roomFor1v1(profile.username, u), `1:1 · du & ${u}`)}
+                  className="text-xs px-2 py-2 rounded-lg" style={{ background: T.panel2, color: PLATE.blue }}>📹</button>
+                <button onClick={() => setOpenFriend(board.find((b) => b.username === u) || { username: u })}
+                  className="text-xs px-3 py-2 rounded-lg" style={{ background: T.panel2, color: T.text }}>Profil</button>
+                <button onClick={() => removeFriend(u)} className="text-xs px-2" style={{ color: PLATE.red }}>Entfernen</button>
+              </div>
+            </Card>
+          ))}
+        </>
+      )}
+
+      <Sheet open={!!openFriend} onClose={() => setOpenFriend(null)} title={openFriend?.username || ""}>
+        {openFriend && <FriendProfile entry={openFriend} isFriend={friends.includes(openFriend.username)} me={profile.username}
+          onAdd={() => { sendRequest(openFriend.username); setOpenFriend(null); }} />}
+      </Sheet>
+
+      <ChatSheet open={!!chatFriend} onClose={() => setChatFriend(null)} friend={chatFriend} me={profile.username} ctx={ctx} />
+      <NotificationsSheet open={notifOpen} onClose={() => setNotifOpen(false)} notifications={notifications} />
     </div>
   );
 }
@@ -2412,10 +2688,11 @@ const TABS = [
   { key: "workout", label: "Workout", icon: "✚" },
   { key: "stats", label: "Statistik", icon: "▮" },
   { key: "board", label: "Rangliste", icon: "▲" },
+  { key: "community", label: "Community", icon: "◆" },
   { key: "profile", label: "Profil", icon: "●" },
 ];
 
-function TabBar({ tab, go, active }) {
+function TabBar({ tab, go, active, notifCount = 0 }) {
   const T = useT();
   return (
     <div className="fixed bottom-0 left-0 right-0 z-40 flex justify-center">
@@ -2423,11 +2700,18 @@ function TabBar({ tab, go, active }) {
         {TABS.map((t) => {
           const on = tab === t.key || (t.key === "stats" && ["history", "detail"].includes(tab));
           const dot = t.key === "workout" && active;
+          const badge = t.key === "community" && notifCount > 0;
           return (
             <button key={t.key} onClick={() => go(t.key)} className="flex-1 py-3 flex flex-col items-center gap-1 active:scale-95">
               <span className="text-sm relative" style={{ color: on ? PLATE.yellow : T.muted }}>
                 {t.icon}
                 {dot && <span style={{ position: "absolute", top: -2, right: -6, width: 6, height: 6, borderRadius: 9, background: PLATE.yellow }} />}
+                {badge && (
+                  <span className="rig-num" style={{
+                    position: "absolute", top: -6, right: -10, fontSize: 9, minWidth: 14, height: 14, padding: "0 3px",
+                    borderRadius: 9, background: PLATE.red, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center",
+                  }}>{notifCount > 9 ? "9+" : notifCount}</span>
+                )}
               </span>
               <span className="text-xs" style={{ color: on ? T.text : T.muted, fontSize: 10 }}>{t.label}</span>
             </button>
@@ -2494,6 +2778,8 @@ function AppInner() {
   const [active, setActive] = useState(null);
   const [board, setBoard] = useState([]);
   const [social, setSocial] = useState({ friends: [], requests: [] });
+  const [notifications, setNotifications] = useState([]);
+  const [feed, setFeed] = useState([]);
   const [tab, setTab] = useState("home");
   const [detail, setDetail] = useState(null);
   const [toastMsg, setToastMsg] = useState(null);
@@ -2765,6 +3051,7 @@ function AppInner() {
     if (cur.requests.includes(profile.username)) return toast({ msg: "Anfrage läuft schon." });
     cur.requests = [...cur.requests, profile.username];
     await S.set(key, cur, true);
+    await pushNotification(target, { type: "friend_request", from: profile.username, text: `${profile.username} möchte mit dir befreundet sein.` });
     toast({ msg: `Anfrage an ${target} ist raus.` });
   };
   const acceptRequest = async (from) => {
@@ -2773,6 +3060,7 @@ function AppInner() {
     const theirs = (await S.get(K.social(from), true)) || { friends: [], requests: [] };
     theirs.friends = [...new Set([...theirs.friends, profile.username])];
     await S.set(K.social(from), theirs, true);
+    await pushNotification(from, { type: "friend_accept", from: profile.username, text: `${profile.username} hat deine Anfrage angenommen.` });
     toast({ msg: `${from} ist jetzt in deiner Liste.` });
   };
   const declineRequest = async (from) => {
@@ -2786,6 +3074,92 @@ function AppInner() {
     theirs.friends = theirs.friends.filter((f) => f !== profile.username);
     await S.set(K.social(u), theirs, true);
   };
+
+  /* --- Benachrichtigungen --- */
+  const refreshNotifications = useCallback(async () => {
+    if (!profile) return;
+    const cur = await S.get(K.notif(profile.username), true);
+    setNotifications((cur && cur.items) || []);
+  }, [profile]);
+
+  const markNotificationsRead = async () => {
+    if (!profile || !notifications.some((n) => !n.read)) return;
+    const items = notifications.map((n) => ({ ...n, read: true }));
+    setNotifications(items);
+    await S.set(K.notif(profile.username), { items }, true);
+  };
+
+  /* Alle paar Sekunden pollen statt Echtzeit – ohne eigenen Realtime-Server
+     reicht das für Freundschaftsanfragen und Chat-Nachrichten locker aus. */
+  useEffect(() => {
+    if (!profile) return;
+    refreshNotifications();
+    const id = setInterval(refreshNotifications, 25000);
+    return () => clearInterval(id);
+  }, [profile, refreshNotifications]);
+
+  /* --- Chat (1:1, nur unter Freunden) --- */
+  const sendMessage = async (friend, text) => {
+    const t = text.trim();
+    if (!t || !profile) return null;
+    const key = K.chat(profile.username, friend);
+    const cur = (await S.get(key, true)) || { messages: [] };
+    const msg = { id: uid(), from: profile.username, text: t.slice(0, 500), createdAt: Date.now() };
+    const messages = [...(cur.messages || []), msg].slice(-200);
+    await S.set(key, { messages }, true);
+    await pushNotification(friend, { type: "chat", from: profile.username, text: t.slice(0, 80) });
+    return messages;
+  };
+  const loadChat = async (friend) => {
+    if (!profile) return [];
+    const cur = await S.get(K.chat(profile.username, friend), true);
+    return (cur && cur.messages) || [];
+  };
+
+  /* --- Community-Feed (Fotos, Fortschritt, Text) --- */
+  const addPost = async (text, image) => {
+    if (!profile) return;
+    const key = K.feed(profile.username);
+    const cur = (await S.get(key, true)) || { posts: [] };
+    const post = {
+      id: uid(), authorUsername: profile.username, authorEmoji: profile.emoji,
+      text: (text || "").trim().slice(0, 500), image: image || null, createdAt: Date.now(), likes: [],
+    };
+    const posts = [post, ...(cur.posts || [])].slice(0, 30);
+    await S.set(key, { posts }, true);
+    await refreshFeed();
+    toast({ msg: "Beitrag gepostet." });
+  };
+  const deletePost = async (postId) => {
+    if (!profile) return;
+    const key = K.feed(profile.username);
+    const cur = (await S.get(key, true)) || { posts: [] };
+    const posts = (cur.posts || []).filter((p) => p.id !== postId);
+    await S.set(key, { posts }, true);
+    await refreshFeed();
+  };
+  const toggleLike = async (authorUsername, postId) => {
+    if (!profile) return;
+    const key = K.feed(authorUsername);
+    const cur = (await S.get(key, true)) || { posts: [] };
+    const posts = (cur.posts || []).map((p) => {
+      if (p.id !== postId) return p;
+      const has = (p.likes || []).includes(profile.username);
+      return { ...p, likes: has ? p.likes.filter((u) => u !== profile.username) : [...(p.likes || []), profile.username] };
+    });
+    await S.set(key, { posts }, true);
+    await refreshFeed();
+  };
+  const refreshFeed = useCallback(async () => {
+    const keys = await S.keys("feed:", true);
+    const all = [];
+    for (const k of keys.slice(0, 200)) {
+      const e = await S.get(k, true);
+      if (e?.posts) all.push(...e.posts);
+    }
+    all.sort((a, b) => b.createdAt - a.createdAt);
+    setFeed(all.slice(0, 100));
+  }, []);
 
   /* --- Export / Reset --- */
   const exportData = () => {
@@ -2823,6 +3197,8 @@ function AppInner() {
     setActive, go, toast, patchProfile, startWorkout, repeatWorkout, finishWorkout, discardWorkout,
     deleteWorkout, addRun, deleteRun, addRope, deleteRope, addCustomExercise,
     refreshBoard, sendRequest, acceptRequest, declineRequest, removeFriend, exportData, resetAll,
+    notifications, refreshNotifications, markNotificationsRead, sendMessage, loadChat,
+    feed, refreshFeed, addPost, deletePost, toggleLike,
     startCall, cloudStatus: cloudStatusState, authEmail, signOut,
   };
 
@@ -2850,12 +3226,13 @@ function AppInner() {
               {tab === "workout" && <WorkoutScreen ctx={ctx} />}
               {tab === "stats" && <StatsScreen ctx={ctx} />}
               {tab === "board" && <LeaderboardScreen ctx={ctx} />}
+              {tab === "community" && <CommunityScreen ctx={ctx} />}
               {tab === "profile" && <ProfileScreen ctx={ctx} />}
               {tab === "run" && <RunScreen ctx={ctx} />}
               {tab === "rope" && <RopeScreen ctx={ctx} />}
               {tab === "history" && <HistoryScreen ctx={ctx} />}
               {tab === "detail" && detail && <WorkoutDetail ctx={ctx} workout={detail} />}
-              <TabBar tab={tab} go={go} active={!!active} />
+              <TabBar tab={tab} go={go} active={!!active} notifCount={notifications.filter((n) => !n.read).length} />
             </>
           )}
           <CallSheet call={call} onClose={() => setCall(null)} />
