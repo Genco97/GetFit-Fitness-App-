@@ -471,7 +471,7 @@ function buildBoardEntry(profile, workouts, runs, ropes) {
   const streak = computeStreak(activeDays(workouts, runs, ropes));
   const p = profile.privacy;
   return {
-    username: profile.username, emoji: profile.emoji, updatedAt: Date.now(),
+    username: profile.username, emoji: profile.emoji, avatarUrl: profile.avatarUrl || null, updatedAt: Date.now(),
     streak, workouts: a.workouts, reps: a.reps, minutes: Math.round(a.seconds / 60),
     volume: Math.round(a.volume),
     km: p.runsPublic ? Number(a.km.toFixed(2)) : 0,
@@ -485,6 +485,23 @@ function buildBoardEntry(profile, workouts, runs, ropes) {
 const ThemeCtx = React.createContext(DARK);
 const useT = () => React.useContext(ThemeCtx);
 const CallCtx = React.createContext({ startCall: () => {} });
+
+/* Zeigt ein Profilfoto, wenn eins gesetzt ist – sonst das Emoji als Fallback,
+   wie überall in der App gewohnt. */
+function Avatar({ url, emoji, size = 40, style }) {
+  const T = useT();
+  if (url) {
+    return (
+      <img src={url} alt="" className="shrink-0" style={{ width: size, height: size, borderRadius: "50%", objectFit: "cover", ...style }} />
+    );
+  }
+  return (
+    <div className="shrink-0 flex items-center justify-center rounded-full"
+      style={{ width: size, height: size, fontSize: size * 0.55, background: T.panel2, ...style }}>
+      {emoji || "🦍"}
+    </div>
+  );
+}
 
 function Card({ children, style, onClick, className = "" }) {
   const T = useT();
@@ -701,11 +718,18 @@ const EXPERIENCE_LEVELS = [
   { value: "intermediate", label: "Fortgeschritten" },
   { value: "pro", label: "Profi" },
 ];
+const GENDERS = [
+  { value: "male", label: "Männlich" },
+  { value: "female", label: "Weiblich" },
+  { value: "diverse", label: "Divers" },
+  { value: "unspecified", label: "Keine Angabe" },
+];
 
 const defaultSettings = () => ({
   theme: "dark", restDefault: 90, weeklyGoal: 4,
   privacy: { profilePublic: true, workoutsPublic: true, leaderboard: true, runsPublic: true },
   weightKg: null, heightCm: null, experience: null, goals: [], goalWeightKg: null, goalNote: "",
+  avatarUrl: null, gender: null, birthDate: null,
 });
 
 /* Körperdaten & Ziele – wiederverwendet im Onboarding (optionaler Zusatzschritt)
@@ -964,8 +988,10 @@ function Home({ ctx }) {
           </div>
           <div className="text-sm mt-1" style={{ color: T.muted }}>{fmtDate(Date.now())}</div>
         </div>
-        <button onClick={() => go("profile")} className="w-11 h-11 rounded-2xl text-xl flex items-center justify-center"
-          style={{ background: T.panel, border: `1px solid ${T.line}` }}>{profile.emoji}</button>
+        <button onClick={() => go("profile")} className="w-11 h-11 rounded-2xl overflow-hidden flex items-center justify-center"
+          style={{ background: T.panel, border: `1px solid ${T.line}` }}>
+          <Avatar url={profile.avatarUrl} emoji={profile.emoji} size={44} style={{ borderRadius: 14 }} />
+        </button>
       </div>
 
       {active && (
@@ -2054,9 +2080,8 @@ function Podium({ rows, me, unit, decimals, color, onOpen }) {
           <div key={r.username} className="flex-1 flex flex-col items-center"
             onClick={isMe ? undefined : () => onOpen(r)} style={{ cursor: isMe ? "default" : "pointer" }}>
             <div className="rig-display text-xs mb-1" style={{ color: m.tone }}>#{m.rank}</div>
-            <div className="rounded-full flex items-center justify-center mb-2 shrink-0"
-              style={{ width: m.avatar, height: m.avatar, fontSize: m.avatar * 0.5, background: T.panel, border: `2px solid ${m.tone}` }}>
-              {r.emoji || "🦍"}
+            <div className="rounded-full mb-2 shrink-0" style={{ border: `2px solid ${m.tone}`, overflow: "hidden" }}>
+              <Avatar url={r.avatarUrl} emoji={r.emoji} size={m.avatar} style={{ fontSize: m.avatar * 0.5, background: T.panel }} />
             </div>
             <div className="text-xs text-center truncate w-full mb-0.5" style={{ color: T.text, fontWeight: isMe ? 700 : 500 }}>
               {r.username}{isMe && " · du"}
@@ -2160,7 +2185,7 @@ function LeaderboardScreen({ ctx }) {
                 <div className="flex items-center gap-3">
                   <span className="rig-num text-xs w-7 h-7 rounded-full flex items-center justify-center shrink-0"
                     style={{ background: T.panel2, color: T.muted }}>{i + 1}</span>
-                  <span className="text-lg">{r.emoji || "🦍"}</span>
+                  <Avatar url={r.avatarUrl} emoji={r.emoji} size={28} />
                   <div className="flex-1" style={{ minWidth: 0 }}>
                     <div className="text-sm truncate" style={{ color: T.text, fontWeight: me ? 600 : 400 }}>
                       {r.username}{me && " · du"}
@@ -2212,7 +2237,7 @@ function FriendProfile({ entry, isFriend, onAdd, me }) {
   if (!share.profile) {
     return (
       <div className="py-6 text-center">
-        <div className="text-4xl mb-3">{entry.emoji || "🦍"}</div>
+        <div className="flex justify-center mb-3"><Avatar url={entry.avatarUrl} emoji={entry.emoji} size={64} style={{ fontSize: 32 }} /></div>
         <div className="text-sm mb-5" style={{ color: T.muted }}>
           {entry.username} hat das Profil auf privat gestellt. Sichtbar bleibt nur der Platz in der Rangliste.
         </div>
@@ -2223,7 +2248,7 @@ function FriendProfile({ entry, isFriend, onAdd, me }) {
   return (
     <div>
       <div className="text-center mb-5">
-        <div className="text-5xl mb-2">{entry.emoji || "🦍"}</div>
+        <div className="flex justify-center mb-2"><Avatar url={entry.avatarUrl} emoji={entry.emoji} size={80} style={{ fontSize: 40 }} /></div>
         <div className="rig-display text-2xl" style={{ color: T.text }}>{entry.username}</div>
         {entry.streak > 0 && <div className="rig-num text-sm mt-1" style={{ color: PLATE.yellow }}>{entry.streak} Tage Serie</div>}
       </div>
@@ -2381,7 +2406,7 @@ function PostCard({ post, me, onLike, onDelete, onOpenAuthor }) {
   return (
     <Card className="p-4 mb-3">
       <div className="flex items-center gap-2 mb-3">
-        <button onClick={onOpenAuthor} className="text-lg">{post.authorEmoji || "🦍"}</button>
+        <button onClick={onOpenAuthor}><Avatar url={post.authorAvatarUrl} emoji={post.authorEmoji} size={32} /></button>
         <button onClick={onOpenAuthor} className="flex-1 text-sm text-left" style={{ color: T.text, fontWeight: 600 }}>
           {post.authorUsername}{post.authorUsername === me && " · du"}
         </button>
@@ -2467,7 +2492,7 @@ function CommunityScreen({ ctx }) {
             <PostCard key={p.id} post={p} me={profile.username}
               onLike={() => toggleLike(p.authorUsername, p.id)}
               onDelete={() => deletePost(p.id)}
-              onOpenAuthor={() => p.authorUsername !== profile.username && setOpenFriend(board.find((b) => b.username === p.authorUsername) || { username: p.authorUsername, emoji: p.authorEmoji })} />
+              onOpenAuthor={() => p.authorUsername !== profile.username && setOpenFriend(board.find((b) => b.username === p.authorUsername) || { username: p.authorUsername, emoji: p.authorEmoji, avatarUrl: p.authorAvatarUrl })} />
           ))}
         </>
       )}
@@ -2516,19 +2541,23 @@ function CommunityScreen({ ctx }) {
           {friends.length === 0 && (
             <div className="text-xs mb-3" style={{ color: T.muted }}>Noch keine Freunde – oben suchen und Anfrage senden.</div>
           )}
-          {friends.map((u) => (
-            <Card key={u} className="p-3 mb-2">
-              <div className="flex items-center gap-2">
-                <span className="flex-1 text-sm truncate" style={{ color: T.text }}>{u}</span>
-                <button onClick={() => setChatFriend(u)} className="text-xs px-2 py-2 rounded-lg" style={{ background: T.panel2, color: PLATE.yellow }}>💬</button>
-                <button onClick={() => ctx.startCall(roomFor1v1(profile.username, u), `1:1 · du & ${u}`)}
-                  className="text-xs px-2 py-2 rounded-lg" style={{ background: T.panel2, color: PLATE.blue }}>📹</button>
-                <button onClick={() => setOpenFriend(board.find((b) => b.username === u) || { username: u })}
-                  className="text-xs px-3 py-2 rounded-lg" style={{ background: T.panel2, color: T.text }}>Profil</button>
-                <button onClick={() => removeFriend(u)} className="text-xs px-2" style={{ color: PLATE.red }}>Entfernen</button>
-              </div>
-            </Card>
-          ))}
+          {friends.map((u) => {
+            const entry = board.find((b) => b.username === u);
+            return (
+              <Card key={u} className="p-3 mb-2">
+                <div className="flex items-center gap-2">
+                  <Avatar url={entry?.avatarUrl} emoji={entry?.emoji} size={28} />
+                  <span className="flex-1 text-sm truncate" style={{ color: T.text }}>{u}</span>
+                  <button onClick={() => setChatFriend(u)} className="text-xs px-2 py-2 rounded-lg" style={{ background: T.panel2, color: PLATE.yellow }}>💬</button>
+                  <button onClick={() => ctx.startCall(roomFor1v1(profile.username, u), `1:1 · du & ${u}`)}
+                    className="text-xs px-2 py-2 rounded-lg" style={{ background: T.panel2, color: PLATE.blue }}>📹</button>
+                  <button onClick={() => setOpenFriend(entry || { username: u })}
+                    className="text-xs px-3 py-2 rounded-lg" style={{ background: T.panel2, color: T.text }}>Profil</button>
+                  <button onClick={() => removeFriend(u)} className="text-xs px-2" style={{ color: PLATE.red }}>Entfernen</button>
+                </div>
+              </Card>
+            );
+          })}
         </>
       )}
 
@@ -2551,6 +2580,8 @@ function ProfileScreen({ ctx }) {
   const streak = computeStreak(activeDays(workouts, runs, ropes));
   const [confirmReset, setConfirmReset] = useState(false);
   const [signOutBusy, setSignOutBusy] = useState(false);
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const avatarFileRef = useRef(null);
   const statusLabel = { unconfigured: "Nicht angemeldet", ok: "Synchronisiert", error: "Sync-Fehler" }[cloudStatus] || "Nicht angemeldet";
   const statusColor = { unconfigured: T.muted, ok: PLATE.green, error: PLATE.red }[cloudStatus] || T.muted;
   const doSignOut = async () => {
@@ -2558,6 +2589,21 @@ function ProfileScreen({ ctx }) {
     await signOut();
     setSignOutBusy(false);
   };
+
+  const pickAvatar = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setAvatarBusy(true);
+    try {
+      const url = await resizeImageFile(file, 200, 0.75);
+      await patchProfile({ avatarUrl: url });
+    } catch {
+      // Bild ließ sich nicht lesen
+    }
+    setAvatarBusy(false);
+  };
+  const removeAvatar = () => patchProfile({ avatarUrl: null });
 
   const Toggle = ({ label, hint, on, set }) => (
     <div className="flex items-center justify-between py-3" style={{ borderTop: `1px solid ${T.line}` }}>
@@ -2580,11 +2626,27 @@ function ProfileScreen({ ctx }) {
   return (
     <div className="px-5 pt-6 pb-28 rig-fade">
       <div className="text-center mb-6">
-        <div className="text-6xl mb-3">{profile.emoji}</div>
+        <div className="flex justify-center mb-3">
+          <div className="relative">
+            <Avatar url={profile.avatarUrl} emoji={profile.emoji} size={96} style={{ fontSize: 48 }} />
+            <button onClick={() => avatarFileRef.current?.click()} disabled={avatarBusy}
+              className="absolute flex items-center justify-center rounded-full"
+              style={{ right: -4, bottom: -4, width: 32, height: 32, background: PLATE.yellow, color: "#14161B", border: `2px solid ${T.bg}` }}>
+              {avatarBusy ? "…" : "📷"}
+            </button>
+          </div>
+        </div>
+        <input ref={avatarFileRef} type="file" accept="image/*" hidden onChange={pickAvatar} />
+        {profile.avatarUrl && (
+          <button onClick={removeAvatar} className="text-xs mb-2" style={{ color: T.muted }}>Foto entfernen</button>
+        )}
         <div className="rig-display text-3xl" style={{ color: T.text }}>{profile.username}</div>
         <div className="text-xs mt-1" style={{ color: T.muted }}>dabei seit {fmtDate(profile.createdAt)}</div>
       </div>
 
+      <div className="text-xs text-center mb-2" style={{ color: T.muted }}>
+        {profile.avatarUrl ? "Emoji-Fallback (falls du dein Foto entfernst):" : "Emoji, solange kein Foto gesetzt ist:"}
+      </div>
       <div className="flex flex-wrap gap-2 justify-center mb-6">
         {EMOJIS.map((e) => (
           <button key={e} onClick={() => patchProfile({ emoji: e })} className="w-9 h-9 rounded-lg text-base"
@@ -2623,6 +2685,19 @@ function ProfileScreen({ ctx }) {
       <Card className="p-4 mb-4">
         <Eyebrow>Körperdaten &amp; Ziele</Eyebrow>
         <BodyGoalsFields value={profile} onChange={(patch) => patchProfile(patch)} />
+      </Card>
+
+      <Card className="p-4 mb-4">
+        <Eyebrow>Persönliche Angaben</Eyebrow>
+        <div className="text-xs mb-3" style={{ color: T.muted }}>Nur für dich sichtbar – erscheint nirgends sonst in der App.</div>
+        <div className="mb-4">
+          <Segmented value={profile.gender || ""} onChange={(v) => patchProfile({ gender: v })} options={GENDERS} />
+        </div>
+        <div>
+          <div className="text-xs mb-2" style={{ color: T.muted }}>Geburtsdatum</div>
+          <input type="date" value={profile.birthDate || ""} onChange={(e) => patchProfile({ birthDate: e.target.value || null })}
+            className="w-full px-4 py-3 rounded-xl" style={{ background: T.panel2, color: T.text, border: `1px solid ${T.line}` }} />
+        </div>
       </Card>
 
       <Card className="p-4 mb-4">
@@ -3122,7 +3197,7 @@ function AppInner() {
     const key = K.feed(profile.username);
     const cur = (await S.get(key, true)) || { posts: [] };
     const post = {
-      id: uid(), authorUsername: profile.username, authorEmoji: profile.emoji,
+      id: uid(), authorUsername: profile.username, authorEmoji: profile.emoji, authorAvatarUrl: profile.avatarUrl || null,
       text: (text || "").trim().slice(0, 500), image: image || null, createdAt: Date.now(), likes: [],
     };
     const posts = [post, ...(cur.posts || [])].slice(0, 30);
