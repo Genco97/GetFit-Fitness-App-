@@ -1986,6 +1986,45 @@ const BOARDS = [
   { value: "jumps", label: "Seilspringen", unit: "Sprünge", color: PLATE.green },
 ];
 
+const MEDALS = [
+  { rank: 1, tone: PLATE.yellow, barH: 96, avatar: 64 },
+  { rank: 2, tone: "#B8BEC9", barH: 68, avatar: 52 },
+  { rank: 3, tone: "#C97F4A", barH: 50, avatar: 52 },
+];
+
+/* Podium für die Top 3 – 2. Platz links, 1. Platz erhöht in der Mitte,
+   3. Platz rechts, wie man's von anderen Fitness-/Sport-Apps kennt. */
+function Podium({ rows, me, unit, decimals, color, onOpen }) {
+  const T = useT();
+  return (
+    <div className="flex items-end gap-2 mb-5">
+      {[1, 0, 2].map((idx) => {
+        const r = rows[idx];
+        const m = MEDALS[idx];
+        if (!r) return <div key={idx} className="flex-1" />;
+        const isMe = r.username === me;
+        return (
+          <div key={r.username} className="flex-1 flex flex-col items-center"
+            onClick={isMe ? undefined : () => onOpen(r)} style={{ cursor: isMe ? "default" : "pointer" }}>
+            <div className="rig-display text-xs mb-1" style={{ color: m.tone }}>#{m.rank}</div>
+            <div className="rounded-full flex items-center justify-center mb-2 shrink-0"
+              style={{ width: m.avatar, height: m.avatar, fontSize: m.avatar * 0.5, background: T.panel, border: `2px solid ${m.tone}` }}>
+              {r.emoji || "🦍"}
+            </div>
+            <div className="text-xs text-center truncate w-full mb-0.5" style={{ color: T.text, fontWeight: isMe ? 700 : 500 }}>
+              {r.username}{isMe && " · du"}
+            </div>
+            <div className="rig-num text-sm mb-2 whitespace-nowrap" style={{ color }}>
+              {nf(r._v, decimals)} <span className="text-xs" style={{ color: T.muted }}>{unit}</span>
+            </div>
+            <div className="w-full rounded-t-lg" style={{ height: m.barH, background: m.tone, opacity: 0.9 }} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function LeaderboardScreen({ ctx }) {
   const T = useT();
   const { profile, board, refreshBoard, social, sendRequest, acceptRequest, declineRequest, removeFriend, toast } = ctx;
@@ -2051,7 +2090,16 @@ function LeaderboardScreen({ ctx }) {
         </div>
       )}
 
-      {myRank > 0 && (
+      {rows.length === 0 && (
+        <Empty title="Noch niemand hier" hint="Sobald du oder deine Freunde etwas gespeichert habt, füllt sich die Liste." />
+      )}
+
+      {rows.length > 0 && (
+        <Podium rows={rows.slice(0, 3)} me={profile.username} unit={unit} decimals={metric === "km" && !exBoard ? 1 : 0}
+          color={color} onOpen={setOpenFriend} />
+      )}
+
+      {myRank > 0 && myRank > 3 && (
         <Card className="p-4 mb-4" style={{ borderColor: PLATE.yellow }}>
           <div className="flex justify-between items-center">
             <div>
@@ -2063,29 +2111,31 @@ function LeaderboardScreen({ ctx }) {
         </Card>
       )}
 
-      {rows.length === 0 && (
-        <Empty title="Noch niemand hier" hint="Sobald du oder deine Freunde etwas gespeichert habt, füllt sich die Liste." />
-      )}
-
-      {rows.map((r, i) => {
-        const me = r.username === profile.username;
-        return (
-          <Card key={r.username} className="p-4 mb-2" style={me ? { borderColor: PLATE.yellow } : undefined}
-            onClick={me ? undefined : () => setOpenFriend(r)}>
-            <div className="flex items-center gap-3">
-              <span className="rig-num text-sm w-8 shrink-0" style={{ color: i < 3 ? PLATE.yellow : T.muted }}>{i + 1}</span>
-              <span className="text-lg">{r.emoji || "🦍"}</span>
-              <div className="flex-1" style={{ minWidth: 0 }}>
-                <div className="text-sm truncate" style={{ color: T.text, fontWeight: me ? 600 : 400 }}>
-                  {r.username}{me && " · du"}
+      {rows.length > 3 && (
+        <div className="mb-2">
+          {rows.slice(3).map((r, idx) => {
+            const i = idx + 3;
+            const me = r.username === profile.username;
+            return (
+              <Card key={r.username} className="p-3 mb-2" style={me ? { borderColor: PLATE.yellow } : undefined}
+                onClick={me ? undefined : () => setOpenFriend(r)}>
+                <div className="flex items-center gap-3">
+                  <span className="rig-num text-xs w-7 h-7 rounded-full flex items-center justify-center shrink-0"
+                    style={{ background: T.panel2, color: T.muted }}>{i + 1}</span>
+                  <span className="text-lg">{r.emoji || "🦍"}</span>
+                  <div className="flex-1" style={{ minWidth: 0 }}>
+                    <div className="text-sm truncate" style={{ color: T.text, fontWeight: me ? 600 : 400 }}>
+                      {r.username}{me && " · du"}
+                    </div>
+                    {r.streak > 0 && <div className="text-xs" style={{ color: T.muted }}>{r.streak} Tage Serie</div>}
+                  </div>
+                  <span className="rig-num text-sm" style={{ color }}>{nf(r._v, metric === "km" && !exBoard ? 1 : 0)}</span>
                 </div>
-                {r.streak > 0 && <div className="text-xs" style={{ color: T.muted }}>{r.streak} Tage Serie</div>}
-              </div>
-              <span className="rig-num text-sm" style={{ color }}>{nf(r._v, metric === "km" && !exBoard ? 1 : 0)}</span>
-            </div>
-          </Card>
-        );
-      })}
+              </Card>
+            );
+          })}
+        </div>
+      )}
 
       {/* Freunde */}
       <div className="mt-8">
