@@ -1175,10 +1175,20 @@ function WorkoutRow({ w, onClick }) {
 /* --- Aktives Workout ---------------------------------------------------- */
 function WorkoutScreen({ ctx }) {
   const T = useT();
-  const { active, setActive, finishWorkout, discardWorkout, exercises, addCustomExercise, profile, toast, startWorkout } = ctx;
+  const { active, setActive, finishWorkout, discardWorkout, exercises, addCustomExercise, profile, toast, startWorkout, workouts } = ctx;
   const [pickerOpen, setPickerOpen] = useState(false);
   const [rest, setRest] = useState(null); // {left, total}
   const [tick, setTick] = useState(0);
+
+  /* Letzte vergangene Session mit dieser Übung – als Referenz fürs progressive Steigern.
+     `workouts` ist neueste zuerst, ein einfacher Vorwärtslauf reicht also. */
+  const lastSessionFor = useCallback((name) => {
+    for (const w of workouts) {
+      const ex = (w.exercises || []).find((e) => e.name === name);
+      if (ex && ex.sets.length) return { date: w.startedAt, sets: ex.sets, type: ex.type };
+    }
+    return null;
+  }, [workouts]);
 
   /* Workout-Uhr */
   useEffect(() => {
@@ -1315,7 +1325,8 @@ function WorkoutScreen({ ctx }) {
 
         {active.exercises.map((ex) => (
           <ExerciseBlock key={ex.key} ex={ex} onAdd={(s) => addSet(ex.key, s)} onUpdate={(sid, s) => updateSet(ex.key, sid, s)}
-            onDelete={(sid) => delSet(ex.key, sid)} onRemove={() => delExercise(ex.key)} prs={ctx.prs} />
+            onDelete={(sid) => delSet(ex.key, sid)} onRemove={() => delExercise(ex.key)} prs={ctx.prs}
+            lastSession={lastSessionFor(ex.name)} />
         ))}
 
         <Btn variant="ghost" className="w-full mt-2" onClick={() => setPickerOpen(true)}>+ Übung hinzufügen</Btn>
@@ -1349,12 +1360,20 @@ function WorkoutScreen({ ctx }) {
   );
 }
 
-function ExerciseBlock({ ex, onAdd, onUpdate, onDelete, onRemove, prs }) {
+/* Kompakte Zusammenfassung einer Satzliste für die "Letztes Mal"-Referenz. */
+function fmtSetsSummary(sets, type) {
+  if (type === "time") return sets.map((s) => fmtClock(s.sec)).join(" · ");
+  if (type === "weight") return sets.map((s) => `${nf(s.weight, s.weight % 1 ? 1 : 0)}kg×${s.reps}`).join(" · ");
+  return sets.map((s) => s.reps).join("/") + " Wdh.";
+}
+
+function ExerciseBlock({ ex, onAdd, onUpdate, onDelete, onRemove, prs, lastSession }) {
   const T = useT();
   const last = ex.sets[ex.sets.length - 1];
-  const [reps, setReps] = useState(last?.reps || 10);
-  const [weight, setWeight] = useState(last?.weight || 20);
-  const [sec, setSec] = useState(last?.sec || 30);
+  const lastRef = lastSession?.sets[lastSession.sets.length - 1];
+  const [reps, setReps] = useState(last?.reps || lastRef?.reps || 10);
+  const [weight, setWeight] = useState(last?.weight || lastRef?.weight || 20);
+  const [sec, setSec] = useState(last?.sec || lastRef?.sec || 30);
   const [tallyMode, setTallyMode] = useState(false);
   const [editing, setEditing] = useState(null);
 
@@ -1368,6 +1387,12 @@ function ExerciseBlock({ ex, onAdd, onUpdate, onDelete, onRemove, prs }) {
     else { if (reps < 1) return; onAdd({ reps: Math.round(reps) }); }
     setTallyMode(false);
   };
+  const repeatLastSet = () => {
+    if (!last) return;
+    if (ex.type === "time") onAdd({ sec: last.sec });
+    else if (ex.type === "weight") onAdd({ reps: last.reps, weight: last.weight || 0 });
+    else onAdd({ reps: last.reps });
+  };
 
   return (
     <Card className="p-4 mb-3">
@@ -1378,6 +1403,11 @@ function ExerciseBlock({ ex, onAdd, onUpdate, onDelete, onRemove, prs }) {
             {ex.category} · {ex.type === "weight" ? "mit Gewicht" : ex.type === "time" ? "auf Zeit" : "Körpergewicht"}
             {pr && ex.type !== "time" && pr.maxReps ? ` · Bestwert ${pr.maxReps}` : ""}
           </div>
+          {lastSession && (
+            <div className="text-xs mt-1" style={{ color: T.muted }}>
+              Letztes Mal ({relDay(lastSession.date)}): <span style={{ color: T.text }}>{fmtSetsSummary(lastSession.sets, lastSession.type)}</span>
+            </div>
+          )}
         </div>
         <button onClick={onRemove} className="text-xs px-2 py-1 rounded-lg" style={{ color: T.muted, background: T.panel2 }}>Entfernen</button>
       </div>
@@ -1455,6 +1485,12 @@ function ExerciseBlock({ ex, onAdd, onUpdate, onDelete, onRemove, prs }) {
                     style={{ background: T.panel2, color: T.muted }}>Strichliste</button>
                 )}
               </>
+            )}
+            {last && (
+              <button onClick={repeatLastSet} className="text-xs px-3 py-2 rounded-lg shrink-0"
+                style={{ background: T.panel2, color: T.text }}>
+                ↻ {ex.type === "time" ? fmtClock(last.sec) : ex.type === "weight" ? `${nf(last.weight, last.weight % 1 ? 1 : 0)}kg×${last.reps}` : `${last.reps} Wdh.`}
+              </button>
             )}
             <Btn className="flex-1" onClick={commit} style={{ minWidth: 120 }}>Satz sichern</Btn>
           </div>
