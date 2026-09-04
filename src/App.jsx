@@ -357,7 +357,7 @@ const S = {
 /* Holt einen kompletten Datensatz aus der Cloud – für Login auf neuem Gerät und
    für den stillen Abgleich beim Start. owner ist die auth.uid() des Kontos. */
 async function pullAll(owner) {
-  const [profile, workouts, runs, ropes, weight, custom, prs, achievements, profileRow] = await Promise.all([
+  const [profile, workouts, runs, ropes, weight, custom, prs, achievements, streak, profileRow] = await Promise.all([
     Cloud.get(K.profile, false, owner).catch(() => null),
     Cloud.get(K.workouts, false, owner).catch(() => null),
     Cloud.get(K.runs, false, owner).catch(() => null),
@@ -366,11 +366,12 @@ async function pullAll(owner) {
     Cloud.get(K.custom, false, owner).catch(() => null),
     Cloud.get(K.prs, false, owner).catch(() => null),
     Cloud.get(K.achievements, false, owner).catch(() => null),
+    Cloud.get(K.streak, false, owner).catch(() => null),
     Cloud.getProfileRow(owner).catch(() => null),
   ]);
   const social = profileRow ? await Cloud.get(K.social(profileRow.username), true, "").catch(() => null) : null;
   const merged = profileRow ? { ...profile, username: profileRow.username, emoji: profileRow.emoji } : profile;
-  return { profile: merged, workouts, runs, ropes, weight, custom, prs, achievements, social };
+  return { profile: merged, workouts, runs, ropes, weight, custom, prs, achievements, streak, social };
 }
 
 const K = {
@@ -382,6 +383,7 @@ const K = {
   custom: "custom:exercises",
   prs: "log:prs",
   achievements: "log:achievements",
+  streak: "log:streak",
   active: "active:workout",
   board: (u) => `board:${u}`,
   social: (u) => `social:${u}`,
@@ -438,15 +440,19 @@ function activeDays(workouts, runs, ropes) {
   ropes.forEach((r) => s.add(dayKey(r.date)));
   return s;
 }
-function computeStreak(days) {
-  if (!days.size) return 0;
+/* frozenDays (optional): Tage, die per Streak-Schutz überbrückt wurden – zählen
+   für die Serie wie ein echter aktiver Tag, ohne dass dort etwas eingetragen wurde. */
+function computeStreak(days, frozenDays) {
+  const frozen = frozenDays && frozenDays.length ? new Set(frozenDays) : null;
+  const isActive = (k) => days.has(k) || (frozen ? frozen.has(k) : false);
+  if (!days.size && !frozen) return 0;
   let cur = Date.now();
-  if (!days.has(dayKey(cur))) {
+  if (!isActive(dayKey(cur))) {
     cur -= DAY;
-    if (!days.has(dayKey(cur))) return 0;
+    if (!isActive(dayKey(cur))) return 0;
   }
   let n = 0;
-  while (days.has(dayKey(cur))) { n++; cur -= DAY; }
+  while (isActive(dayKey(cur))) { n++; cur -= DAY; }
   return n;
 }
 
@@ -497,9 +503,9 @@ const ACHIEVEMENTS = [
   { id: "reps10000", icon: "🔢", title: "Zehntausend", hint: "10.000 Wiederholungen insgesamt", check: (s) => s.totalReps >= 10000 },
 ];
 
-function buildBoardEntry(profile, workouts, runs, ropes) {
+function buildBoardEntry(profile, workouts, runs, ropes, frozenDays) {
   const a = aggregate(workouts, runs, ropes);
-  const streak = computeStreak(activeDays(workouts, runs, ropes));
+  const streak = computeStreak(activeDays(workouts, runs, ropes), frozenDays);
   const p = profile.privacy;
   return {
     username: profile.username, emoji: profile.emoji, avatarUrl: profile.avatarUrl || null, updatedAt: Date.now(),
@@ -1011,10 +1017,10 @@ function ProgressRing({ value, max, size = 52, stroke = 5, color }) {
 /* --- Home --------------------------------------------------------------- */
 function Home({ ctx }) {
   const T = useT();
-  const { profile, workouts, runs, ropes, prs, go, startWorkout, active, board, refreshBoard } = ctx;
+  const { profile, workouts, runs, ropes, prs, go, startWorkout, active, board, refreshBoard, streak, streakData } = ctx;
   const agg = useMemo(() => aggregate(workouts, runs, ropes), [workouts, runs, ropes]);
   const days = useMemo(() => activeDays(workouts, runs, ropes), [workouts, runs, ropes]);
-  const streak = computeStreak(days);
+  const frozenSet = useMemo(() => new Set(streakData.frozenDays), [streakData.frozenDays]);
 
   useEffect(() => { refreshBoard(); }, [refreshBoard]);
   const rank = useMemo(() => {
@@ -1035,10 +1041,11 @@ function Home({ ctx }) {
   const goal = profile.weeklyGoal || 4;
   const topPR = Object.entries(prs).sort((a, b) => (b[1].maxReps || 0) - (a[1].maxReps || 0)).slice(0, 3);
 
-  /* 14-Tage-Streifen: ein Strich pro aktivem Tag */
+  /* 14-Tage-Streifen: ein Strich pro aktivem Tag, per Streak-Schutz überbrückte Tage extra markiert */
   const strip = Array.from({ length: 14 }, (_, i) => {
     const ts = Date.now() - (13 - i) * DAY;
-    return { ts, on: days.has(dayKey(ts)) };
+    const k = dayKey(ts);
+    return { ts, on: days.has(k), frozen: !days.has(k) && frozenSet.has(k) };
   });
 
   return (
@@ -1076,6 +1083,11 @@ function Home({ ctx }) {
             <div className="rig-num text-4xl" style={{ color: streak ? PLATE.yellow : T.muted }}>
               {streak}<span className="text-base ml-2" style={{ color: T.muted }}>{streak === 1 ? "Tag" : "Tage"}</span>
             </div>
+            {streakData.freezes > 0 && (
+              <div className="text-xs mt-1" style={{ color: PLATE.blue }}>
+                🧊 {streakData.freezes} Streak-Schutz{streakData.freezes === 1 ? "" : "e"}
+              </div>
+            )}
           </div>
           <div className="flex flex-col items-center">
             <div className="relative flex items-center justify-center" style={{ width: 52, height: 52 }}>
@@ -1087,9 +1099,10 @@ function Home({ ctx }) {
         </div>
         <div className="flex gap-1.5 items-end" style={{ height: 26 }}>
           {strip.map((d, i) => (
-            <div key={i} title={fmtDayShort(d.ts)} style={{
-              flex: 1, height: d.on ? 26 : 8, borderRadius: 3,
-              background: d.on ? PLATE.yellow : T.panel2, transition: "height .2s ease",
+            <div key={i} title={d.frozen ? `${fmtDayShort(d.ts)} · Streak-Schutz` : fmtDayShort(d.ts)} style={{
+              flex: 1, height: d.on || d.frozen ? 26 : 8, borderRadius: 3,
+              background: d.on ? PLATE.yellow : d.frozen ? PLATE.blue : T.panel2, transition: "height .2s ease",
+              opacity: d.frozen ? 0.7 : 1,
             }} />
           ))}
         </div>
@@ -2890,9 +2903,8 @@ function CommunityScreen({ ctx }) {
 /* --- Profil / Einstellungen --------------------------------------------- */
 function ProfileScreen({ ctx }) {
   const T = useT();
-  const { profile, patchProfile, workouts, runs, ropes, prs, exportData, go, resetAll, startCall, cloudStatus, authEmail, signOut } = ctx;
+  const { profile, patchProfile, workouts, runs, ropes, prs, streak, exportData, go, resetAll, startCall, cloudStatus, authEmail, signOut } = ctx;
   const agg = aggregate(workouts, runs, ropes);
-  const streak = computeStreak(activeDays(workouts, runs, ropes));
   const [confirmReset, setConfirmReset] = useState(false);
   const [signOutBusy, setSignOutBusy] = useState(false);
   const [avatarBusy, setAvatarBusy] = useState(false);
@@ -3177,6 +3189,7 @@ function AppInner() {
   const [custom, setCustom] = useState([]);
   const [prs, setPrs] = useState({});
   const [achievementsUnlocked, setAchievementsUnlocked] = useState({});
+  const [streakData, setStreakData] = useState({ freezes: 1, frozenDays: [], grantedWeeks: 0 });
   const [active, setActive] = useState(null);
   const [board, setBoard] = useState([]);
   const [social, setSocial] = useState({ friends: [], requests: [] });
@@ -3221,7 +3234,63 @@ function AppInner() {
     setTimeout(() => setToastMsg(null), t.kind === "pr" ? 4200 : 2600);
   }, []);
 
+  /* Reiht Toasts strikt nacheinander, statt sich beim gleichzeitigen Auslösen
+     mehrerer Effekte (z. B. Abzeichen + Streak-Schutz in derselben Ladung)
+     gegenseitig zu überschreiben. */
+  const toastQueueRef = useRef(Promise.resolve());
+  const queueToast = useCallback((t) => {
+    toastQueueRef.current = toastQueueRef.current.then(
+      () => new Promise((resolve) => { toast(t); setTimeout(resolve, t.kind === "pr" ? 4200 : 2600); })
+    );
+  }, [toast]);
+
   const startCall = useCallback((room, label) => setCall({ room, label, me: profile?.username || "Gast" }), [profile]);
+
+  /* --- Serie: aus den echten aktiven Tagen plus per Streak-Schutz überbrückten
+     Tagen, wird an mehreren Stellen gebraucht (Home, Profil, Rangliste, Abzeichen). */
+  const activeDaySet = useMemo(() => activeDays(workouts, runs, ropes), [workouts, runs, ropes]);
+  const streak = useMemo(() => computeStreak(activeDaySet, streakData.frozenDays), [activeDaySet, streakData.frozenDays]);
+
+  const MAX_STREAK_FREEZES = 2;
+  /* Schützt automatisch genau einen verpassten Tag, wenn ein Streak-Schutz-Token
+     vorhanden ist, und vergibt alle 7 Serientage ein neues Token (bis zum Maximum).
+     Läuft bei jeder Änderung der aktiven Tage – ein bereits geschützter Tag wird
+     dabei nie ein zweites Mal verbraucht. */
+  useEffect(() => {
+    if (!ready || !profile) return;
+    const yesterday = dayKey(Date.now() - DAY);
+    const dayBefore = dayKey(Date.now() - 2 * DAY);
+    const frozenSet = new Set(streakData.frozenDays);
+    const alreadyCoveredYesterday = activeDaySet.has(yesterday) || frozenSet.has(yesterday);
+    const hadStreakBefore = activeDaySet.has(dayBefore) || frozenSet.has(dayBefore);
+
+    let next = streakData;
+    let usedFreeze = false, grantedFreeze = false;
+
+    if (!alreadyCoveredYesterday && hadStreakBefore && streakData.freezes > 0) {
+      next = { ...next, freezes: next.freezes - 1, frozenDays: [...next.frozenDays, yesterday] };
+      usedFreeze = true;
+    }
+
+    const displayStreak = computeStreak(activeDaySet, next.frozenDays);
+    const weeksEarned = Math.floor(displayStreak / 7);
+    if (weeksEarned > next.grantedWeeks) {
+      if (next.freezes < MAX_STREAK_FREEZES) { next = { ...next, freezes: next.freezes + 1 }; grantedFreeze = true; }
+      next = { ...next, grantedWeeks: weeksEarned };
+    }
+
+    if (next === streakData) return;
+    setStreakData(next);
+    S.set(K.streak, next, false, owner);
+    if (usedFreeze && grantedFreeze) {
+      queueToast({ kind: "pr", title: "Serie geschützt & Schutz erneuert", msg: "🧊 Gestern nichts eingetragen – ein Streak-Schutz sprang ein, dafür gibt's als Belohnung fürs Durchhalten gleich einen neuen." });
+    } else if (usedFreeze) {
+      queueToast({ kind: "pr", title: "Serie geschützt", msg: "🧊 Gestern nichts eingetragen – ein Streak-Schutz wurde automatisch eingesetzt." });
+    } else if (grantedFreeze) {
+      queueToast({ kind: "pr", title: "Neuer Streak-Schutz", msg: "🧊 Für deine Serie gibt's einen Streak-Schutz dazu." });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeDaySet, ready, profile]);
 
   /* --- Abzeichen: reagiert auf jede Änderung an Workouts/Läufen/Seil/Rekorden,
      schaltet neu erreichte Meilensteine frei und zeigt sie kurz an. */
@@ -3229,11 +3298,11 @@ function AppInner() {
     const agg = aggregate(workouts, runs, ropes);
     return {
       workouts: workouts.length, runsCount: runs.length,
-      streak: computeStreak(activeDays(workouts, runs, ropes)),
+      streak,
       totalKm: agg.km, maxRunKm: runs.reduce((m, r) => Math.max(m, r.distanceKm || 0), 0),
       totalJumps: agg.jumps, totalReps: agg.reps, prCount: Object.keys(prs).length,
     };
-  }, [workouts, runs, ropes, prs]);
+  }, [workouts, runs, ropes, prs, streak]);
 
   useEffect(() => {
     if (!ready || !profile) return;
@@ -3243,13 +3312,11 @@ function AppInner() {
     newly.forEach((a) => { next[a.id] = Date.now(); });
     setAchievementsUnlocked(next);
     S.set(K.achievements, next, false, owner);
-    setTimeout(() => {
-      toast({
-        kind: "pr",
-        title: newly.length === 1 ? "Abzeichen freigeschaltet" : `${newly.length} neue Abzeichen`,
-        msg: newly.map((a) => `${a.icon} ${a.title}`).join(" · "),
-      });
-    }, toastMsg ? 3000 : 0);
+    queueToast({
+      kind: "pr",
+      title: newly.length === 1 ? "Abzeichen freigeschaltet" : `${newly.length} neue Abzeichen`,
+      msg: newly.map((a) => `${a.icon} ${a.title}`).join(" · "),
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [achievementStats, ready, profile]);
 
@@ -3302,12 +3369,13 @@ function AppInner() {
     (async () => {
       if (authUid === undefined) return; // Session-Check noch nicht abgeschlossen
       if (!authUid) { setProfile(null); setReady(true); return; }
-      const [p, w, r, j, wt, c, pr, ach, a] = await Promise.all([
+      const [p, w, r, j, wt, c, pr, ach, sd, a] = await Promise.all([
         Local.get(K.profile), Local.get(K.workouts), Local.get(K.runs), Local.get(K.ropes),
-        Local.get(K.weight), Local.get(K.custom), Local.get(K.prs), Local.get(K.achievements), Local.get(K.active),
+        Local.get(K.weight), Local.get(K.custom), Local.get(K.prs), Local.get(K.achievements), Local.get(K.streak), Local.get(K.active),
       ]);
       setProfile(p); setWorkouts(w || []); setRuns(r || []); setRopes(j || []); setWeightLog(wt || []);
-      setCustom(c || []); setPrs(pr || {}); setAchievementsUnlocked(ach || {}); setActive(a || null);
+      setCustom(c || []); setPrs(pr || {}); setAchievementsUnlocked(ach || {});
+      setStreakData(sd || { freezes: 1, frozenDays: [], grantedWeeks: 0 }); setActive(a || null);
       if (p) {
         const soc = await Local.get(K.social(p.username), true);
         setSocial(soc || { friends: [], requests: [] });
@@ -3328,6 +3396,7 @@ function AppInner() {
       if (remote?.custom) { setCustom(remote.custom); Local.set(K.custom, remote.custom); }
       if (remote?.prs) { setPrs(remote.prs); Local.set(K.prs, remote.prs); }
       if (remote?.achievements) { setAchievementsUnlocked(remote.achievements); Local.set(K.achievements, remote.achievements); }
+      if (remote?.streak) { setStreakData(remote.streak); Local.set(K.streak, remote.streak); }
       if (remote?.social) { setSocial(remote.social); Local.set(K.social(remote.profile.username), remote.social, true); }
     })();
   }, [authUid]);
@@ -3346,11 +3415,13 @@ function AppInner() {
     setProfile(data.profile); setWorkouts(data.workouts || []); setRuns(data.runs || []);
     setRopes(data.ropes || []); setWeightLog(data.weight || []); setCustom(data.custom || []); setPrs(data.prs || {});
     setAchievementsUnlocked(data.achievements || {});
+    setStreakData(data.streak || { freezes: 1, frozenDays: [], grantedWeeks: 0 });
     setSocial(data.social || { friends: [], requests: [] });
     await Promise.all([
       Local.set(K.profile, data.profile), Local.set(K.workouts, data.workouts || []),
       Local.set(K.runs, data.runs || []), Local.set(K.ropes, data.ropes || []), Local.set(K.weight, data.weight || []),
       Local.set(K.custom, data.custom || []), Local.set(K.prs, data.prs || {}), Local.set(K.achievements, data.achievements || {}),
+      Local.set(K.streak, data.streak || { freezes: 1, frozenDays: [], grantedWeeks: 0 }),
       Local.set(K.social(data.profile.username), data.social || { friends: [], requests: [] }, true),
     ]);
     /* Falls die Cloud noch keine (vollständigen) Profil-Einstellungen hatte
@@ -3371,8 +3442,8 @@ function AppInner() {
   const pushBoard = useCallback(async (p = profile, w = workouts, r = runs, j = ropes) => {
     if (!p) return;
     if (!p.privacy.leaderboard) { await S.del(K.board(p.username), true); return; }
-    await S.set(K.board(p.username), buildBoardEntry(p, w, r, j), true);
-  }, [profile, workouts, runs, ropes]);
+    await S.set(K.board(p.username), buildBoardEntry(p, w, r, j, streakData.frozenDays), true);
+  }, [profile, workouts, runs, ropes, streakData.frozenDays]);
 
   const refreshBoard = useCallback(async () => {
     const keys = await S.keys("board:", true);
@@ -3628,10 +3699,12 @@ function AppInner() {
     }
   };
   const resetAll = async () => {
-    setWorkouts([]); setRuns([]); setRopes([]); setWeightLog([]); setPrs({}); setActive(null);
+    const freshStreak = { freezes: 1, frozenDays: [], grantedWeeks: 0 };
+    setWorkouts([]); setRuns([]); setRopes([]); setWeightLog([]); setPrs({}); setStreakData(freshStreak); setActive(null);
     await Promise.all([
       S.set(K.workouts, [], false, owner), S.set(K.runs, [], false, owner), S.set(K.ropes, [], false, owner),
-      S.set(K.weight, [], false, owner), S.set(K.prs, {}, false, owner), S.set(K.active, null, false, owner),
+      S.set(K.weight, [], false, owner), S.set(K.prs, {}, false, owner), S.set(K.streak, freshStreak, false, owner),
+      S.set(K.active, null, false, owner),
     ]);
     await pushBoard(profile, [], [], []);
     toast({ msg: "Alles gelöscht." });
@@ -3644,7 +3717,7 @@ function AppInner() {
   };
 
   const ctx = {
-    profile, workouts, runs, ropes, weightLog, prs, achievementsUnlocked, achievementStats, active, exercises, board, social, owner,
+    profile, workouts, runs, ropes, weightLog, prs, achievementsUnlocked, achievementStats, streak, streakData, active, exercises, board, social, owner,
     setActive, go, toast, patchProfile, startWorkout, repeatWorkout, finishWorkout, discardWorkout,
     deleteWorkout, addRun, deleteRun, addRope, deleteRope, addWeightEntry, deleteWeightEntry, addCustomExercise,
     refreshBoard, sendRequest, acceptRequest, declineRequest, removeFriend, exportData, resetAll,
