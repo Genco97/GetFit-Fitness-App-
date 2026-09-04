@@ -642,10 +642,82 @@ function Empty({ title, hint, action }) {
 /* --- Onboarding --------------------------------------------------------- */
 const EMOJIS = ["🦍", "🔥", "🪨", "⚡", "🐺", "🦅", "🥋", "🧗", "🏃", "🪢", "💪", "🦈"];
 
+const GOALS = [
+  { value: "muscle", label: "Muskelaufbau" },
+  { value: "weightloss", label: "Abnehmen" },
+  { value: "endurance", label: "Ausdauer" },
+  { value: "strength", label: "Kraft" },
+  { value: "mobility", label: "Beweglichkeit" },
+];
+const EXPERIENCE_LEVELS = [
+  { value: "beginner", label: "Anfänger" },
+  { value: "intermediate", label: "Fortgeschritten" },
+  { value: "pro", label: "Profi" },
+];
+
 const defaultSettings = () => ({
   theme: "dark", restDefault: 90, weeklyGoal: 4,
   privacy: { profilePublic: true, workoutsPublic: true, leaderboard: true, runsPublic: true },
+  weightKg: null, heightCm: null, experience: null, goals: [], goalWeightKg: null, goalNote: "",
 });
+
+/* Körperdaten & Ziele – wiederverwendet im Onboarding (optionaler Zusatzschritt)
+   und im Profil-Screen (jederzeit nachträglich änderbar). */
+function BodyGoalsFields({ value, onChange }) {
+  const T = useT();
+  const v = value || {};
+  const toggleGoal = (g) => {
+    const cur = v.goals || [];
+    onChange({ goals: cur.includes(g) ? cur.filter((x) => x !== g) : [...cur, g] });
+  };
+  return (
+    <>
+      <div className="grid grid-cols-2 gap-4 mb-5">
+        <div>
+          <Eyebrow>Gewicht</Eyebrow>
+          <NumberField value={v.weightKg || 0} onChange={(n) => onChange({ weightKg: n || null })} min={0} max={300} step={1} suffix="kg" width={88} />
+        </div>
+        <div>
+          <Eyebrow>Größe</Eyebrow>
+          <NumberField value={v.heightCm || 0} onChange={(n) => onChange({ heightCm: n || null })} min={0} max={250} step={1} suffix="cm" width={88} />
+        </div>
+      </div>
+
+      <Eyebrow>Erfahrung</Eyebrow>
+      <div className="mb-5">
+        <Segmented value={v.experience || ""} onChange={(val) => onChange({ experience: val })} options={EXPERIENCE_LEVELS} />
+      </div>
+
+      <Eyebrow>Ziele</Eyebrow>
+      <div className="flex flex-wrap gap-2 mb-5">
+        {GOALS.map((g) => {
+          const on = (v.goals || []).includes(g.value);
+          return (
+            <button key={g.value} onClick={() => toggleGoal(g.value)}
+              className="px-3 py-2 rounded-lg text-sm active:scale-95"
+              style={{ background: on ? PLATE.yellow : T.panel, color: on ? "#14161B" : T.text, border: `1px solid ${T.line}`, fontWeight: on ? 600 : 400 }}>
+              {g.label}
+            </button>
+          );
+        })}
+      </div>
+
+      <Eyebrow>Zielgewicht (optional)</Eyebrow>
+      <div className="mb-5">
+        <NumberField value={v.goalWeightKg || 0} onChange={(n) => onChange({ goalWeightKg: n || null })} min={0} max={300} step={1} suffix="kg" width={88} />
+      </div>
+
+      <Eyebrow>Was möchtest du erreichen?</Eyebrow>
+      <textarea
+        value={v.goalNote || ""} onChange={(e) => onChange({ goalNote: e.target.value })}
+        placeholder="z. B. in 3 Monaten 10 Klimmzüge am Stück schaffen"
+        rows={3}
+        className="w-full px-4 py-3 rounded-xl text-sm"
+        style={{ background: T.panel, color: T.text, border: `1px solid ${T.line}`, resize: "vertical" }}
+      />
+    </>
+  );
+}
 
 function Onboarding({ onDone, onLogin }) {
   const T = useT();
@@ -657,6 +729,9 @@ function Onboarding({ onDone, onLogin }) {
   const [err, setErr] = useState("");
   const [info, setInfo] = useState("");
   const [busy, setBusy] = useState(false);
+  const [phase, setPhase] = useState("form"); // form | details
+  const [pending, setPending] = useState(null); // {profile, session}
+  const [details, setDetails] = useState({});
 
   const submitNew = async () => {
     const u = name.trim();
@@ -674,7 +749,8 @@ function Onboarding({ onDone, onLogin }) {
       if (data.session) {
         await Cloud.upsertProfileRow(data.session.user.id, u, emoji);
         setBusy(false);
-        onDone({ username: u, emoji, createdAt: Date.now(), ...defaultSettings() }, data.session);
+        setPending({ profile: { username: u, emoji, createdAt: Date.now(), ...defaultSettings() }, session: data.session });
+        setPhase("details");
       } else {
         setBusy(false);
         setMode("login");
@@ -683,6 +759,11 @@ function Onboarding({ onDone, onLogin }) {
     } catch (e) {
       setBusy(false); setErr(e?.message || "Unbekannter Fehler.");
     }
+  };
+
+  const finishDetails = (skip) => {
+    const profile = skip ? pending.profile : { ...pending.profile, ...details };
+    onDone(profile, pending.session);
   };
 
   const submitLogin = async () => {
@@ -711,6 +792,24 @@ function Onboarding({ onDone, onLogin }) {
       setBusy(false); setErr(e?.message || "Unbekannter Fehler.");
     }
   };
+
+  if (phase === "details") {
+    return (
+      <div className="min-h-screen px-6 pt-10 pb-10" style={{ background: T.bg }}>
+        <div className="rig-fade">
+          <div className="rig-display text-3xl mb-2" style={{ color: T.text }}>Dein Profil</div>
+          <div className="text-sm mb-6" style={{ color: T.muted }}>
+            Optional – hilft dir, dein Training passender zu planen. Kannst du jederzeit im Profil ändern.
+          </div>
+          <BodyGoalsFields value={details} onChange={(patch) => setDetails((d) => ({ ...d, ...patch }))} />
+          <div className="flex gap-2 mt-6">
+            <Btn variant="ghost" className="flex-1" onClick={() => finishDetails(true)}>Überspringen</Btn>
+            <Btn className="flex-1" onClick={() => finishDetails(false)}>Speichern</Btn>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex flex-col justify-center px-6" style={{ background: T.bg }}>
@@ -2193,6 +2292,11 @@ function ProfileScreen({ ctx }) {
           <NumberField value={profile.weeklyGoal} onChange={(v) => patchProfile({ weeklyGoal: clamp(Math.round(v), 1, 14) })} min={1} max={14} width={70} />
           <span className="text-sm" style={{ color: T.muted }}>Trainings pro Woche</span>
         </div>
+      </Card>
+
+      <Card className="p-4 mb-4">
+        <Eyebrow>Körperdaten &amp; Ziele</Eyebrow>
+        <BodyGoalsFields value={profile} onChange={(patch) => patchProfile(patch)} />
       </Card>
 
       <Card className="p-4 mb-4">
