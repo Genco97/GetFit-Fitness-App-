@@ -394,6 +394,14 @@ async function pushNotification(toUsername, notif) {
 }
 
 /* ------------------------------------------- 5 AGGREGATION / REKORDE / STREAK */
+/* Bei "Zusatzgewicht" (z. B. gewichtete Klimmzüge) zählt für Volumen/Rekorde
+   das eingetragene Gewicht plus das zum Zeitpunkt gültige Körpergewicht –
+   ex.bodyweightKg wird beim Umschalten auf "added" einmal eingefroren. */
+function effectiveWeight(ex, weight) {
+  if (ex.weightMode !== "added") return weight || 0;
+  return (weight || 0) + (ex.bodyweightKg || 0);
+}
+
 function workoutTotals(w) {
   let reps = 0, volume = 0, sets = 0, sec = 0;
   for (const ex of w.exercises || []) {
@@ -402,7 +410,7 @@ function workoutTotals(w) {
       if (ex.type === "time") sec += st.sec || 0;
       else {
         reps += st.reps || 0;
-        if (ex.type === "weight") volume += (st.reps || 0) * (st.weight || 0);
+        if (ex.type === "weight") volume += (st.reps || 0) * effectiveWeight(ex, st.weight);
       }
     }
   }
@@ -456,8 +464,9 @@ function detectPRs(prev, workout) {
       } else {
         if ((st.reps || 0) > next.maxReps) { next.maxReps = st.reps; neu.push(`${ex.name}: ${st.reps} Wiederholungen`); }
         if (ex.type === "weight") {
-          if ((st.weight || 0) > next.maxWeight) { next.maxWeight = st.weight; neu.push(`${ex.name}: ${nf(st.weight, 1)} kg`); }
-          const v = (st.reps || 0) * (st.weight || 0);
+          const eff = effectiveWeight(ex, st.weight);
+          if (eff > next.maxWeight) { next.maxWeight = eff; neu.push(`${ex.name}: ${nf(eff, 1)} kg`); }
+          const v = (st.reps || 0) * eff;
           if (v > next.bestSetVolume) next.bestSetVolume = v;
         }
       }
@@ -1185,7 +1194,7 @@ function WorkoutScreen({ ctx }) {
   const lastSessionFor = useCallback((name) => {
     for (const w of workouts) {
       const ex = (w.exercises || []).find((e) => e.name === name);
-      if (ex && ex.sets.length) return { date: w.startedAt, sets: ex.sets, type: ex.type };
+      if (ex && ex.sets.length) return { date: w.startedAt, sets: ex.sets, type: ex.type, weightMode: ex.weightMode };
     }
     return null;
   }, [workouts]);
@@ -1245,6 +1254,14 @@ function WorkoutScreen({ ctx }) {
     return a;
   });
   const delExercise = (key) => patch((a) => { a.exercises = a.exercises.filter((e) => e.key !== key); return a; });
+  /* "Zusatzgewicht" merkt sich das aktuelle Körpergewicht aus dem Profil, damit
+     Volumen/Rekorde auch nach einer späteren Änderung des Profilgewichts stabil bleiben. */
+  const setWeightMode = (key, mode) => patch((a) => {
+    a.exercises = a.exercises.map((e) => e.key === key
+      ? { ...e, weightMode: mode, bodyweightKg: mode === "added" ? (profile.weightKg || 0) : e.bodyweightKg }
+      : e);
+    return a;
+  });
 
   const startTimer = () => patch((a) => { a.started = true; a.paused = false; a.resumedAt = Date.now(); return a; });
   const togglePause = () => patch((a) => {
@@ -1325,8 +1342,8 @@ function WorkoutScreen({ ctx }) {
 
         {active.exercises.map((ex) => (
           <ExerciseBlock key={ex.key} ex={ex} onAdd={(s) => addSet(ex.key, s)} onUpdate={(sid, s) => updateSet(ex.key, sid, s)}
-            onDelete={(sid) => delSet(ex.key, sid)} onRemove={() => delExercise(ex.key)} prs={ctx.prs}
-            lastSession={lastSessionFor(ex.name)} />
+            onDelete={(sid) => delSet(ex.key, sid)} onRemove={() => delExercise(ex.key)} onSetMode={(mode) => setWeightMode(ex.key, mode)}
+            prs={ctx.prs} bodyweightKg={profile.weightKg} lastSession={lastSessionFor(ex.name)} />
         ))}
 
         <Btn variant="ghost" className="w-full mt-2" onClick={() => setPickerOpen(true)}>+ Übung hinzufügen</Btn>
@@ -1361,13 +1378,16 @@ function WorkoutScreen({ ctx }) {
 }
 
 /* Kompakte Zusammenfassung einer Satzliste für die "Letztes Mal"-Referenz. */
-function fmtSetsSummary(sets, type) {
+function fmtSetsSummary(sets, type, weightMode) {
   if (type === "time") return sets.map((s) => fmtClock(s.sec)).join(" · ");
-  if (type === "weight") return sets.map((s) => `${nf(s.weight, s.weight % 1 ? 1 : 0)}kg×${s.reps}`).join(" · ");
+  if (type === "weight") {
+    const p = weightMode === "added" ? "+" : "";
+    return sets.map((s) => `${p}${nf(s.weight, s.weight % 1 ? 1 : 0)}kg×${s.reps}`).join(" · ");
+  }
   return sets.map((s) => s.reps).join("/") + " Wdh.";
 }
 
-function ExerciseBlock({ ex, onAdd, onUpdate, onDelete, onRemove, prs, lastSession }) {
+function ExerciseBlock({ ex, onAdd, onUpdate, onDelete, onRemove, onSetMode, prs, lastSession, bodyweightKg }) {
   const T = useT();
   const last = ex.sets[ex.sets.length - 1];
   const lastRef = lastSession?.sets[lastSession.sets.length - 1];
@@ -1378,8 +1398,10 @@ function ExerciseBlock({ ex, onAdd, onUpdate, onDelete, onRemove, prs, lastSessi
   const [editing, setEditing] = useState(null);
 
   const totalReps = ex.sets.reduce((a, s) => a + (s.reps || 0), 0);
-  const volume = ex.sets.reduce((a, s) => a + (s.reps || 0) * (s.weight || 0), 0);
+  const volume = ex.sets.reduce((a, s) => a + (s.reps || 0) * effectiveWeight(ex, s.weight), 0);
   const pr = prs[ex.name];
+  const wPrefix = ex.weightMode === "added" ? "+" : "";
+  const fmtW = (w) => `${wPrefix}${nf(w, w % 1 ? 1 : 0)}`;
 
   const commit = () => {
     if (ex.type === "time") { if (sec < 1) return; onAdd({ sec: Math.round(sec) }); }
@@ -1405,12 +1427,24 @@ function ExerciseBlock({ ex, onAdd, onUpdate, onDelete, onRemove, prs, lastSessi
           </div>
           {lastSession && (
             <div className="text-xs mt-1" style={{ color: T.muted }}>
-              Letztes Mal ({relDay(lastSession.date)}): <span style={{ color: T.text }}>{fmtSetsSummary(lastSession.sets, lastSession.type)}</span>
+              Letztes Mal ({relDay(lastSession.date)}): <span style={{ color: T.text }}>{fmtSetsSummary(lastSession.sets, lastSession.type, lastSession.weightMode)}</span>
             </div>
           )}
         </div>
         <button onClick={onRemove} className="text-xs px-2 py-1 rounded-lg" style={{ color: T.muted, background: T.panel2 }}>Entfernen</button>
       </div>
+
+      {ex.type === "weight" && (
+        <div className="mb-3">
+          <Segmented value={ex.weightMode === "added" ? "added" : "total"} onChange={onSetMode}
+            options={[{ value: "total", label: "Gesamtgewicht" }, { value: "added", label: "+ Körpergewicht" }]} />
+          {ex.weightMode === "added" && !bodyweightKg && (
+            <div className="text-xs mt-2" style={{ color: PLATE.yellow }}>
+              Trag dein Körpergewicht im Profil ein, damit Volumen und Rekorde stimmen.
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Sätze */}
       {ex.sets.map((s, i) => (
@@ -1437,7 +1471,7 @@ function ExerciseBlock({ ex, onAdd, onUpdate, onDelete, onRemove, prs, lastSessi
               </div>
               <span className="rig-num text-sm mr-3" style={{ color: T.text }}>
                 {ex.type === "time" ? fmtClock(s.sec)
-                  : ex.type === "weight" ? `${nf(s.weight, s.weight % 1 ? 1 : 0)} kg × ${s.reps}`
+                  : ex.type === "weight" ? `${fmtW(s.weight)} kg × ${s.reps}`
                     : `${s.reps} Wdh.`}
               </span>
               <button onClick={() => setEditing(s.id)} className="text-xs px-2 py-1 rounded" style={{ color: T.muted }}>✎</button>
@@ -1478,7 +1512,7 @@ function ExerciseBlock({ ex, onAdd, onUpdate, onDelete, onRemove, prs, lastSessi
               <NumberField value={sec} onChange={setSec} min={1} max={3600} step={5} width={80} suffix="s" />
             ) : (
               <>
-                {ex.type === "weight" && <NumberField value={weight} onChange={setWeight} min={0} max={500} step={2.5} width={80} suffix="kg" />}
+                {ex.type === "weight" && <NumberField value={weight} onChange={setWeight} min={0} max={500} step={2.5} width={80} suffix={`${wPrefix}kg`} />}
                 <NumberField value={reps} onChange={setReps} min={1} max={1000} width={72} />
                 {ex.type === "reps" && (
                   <button onClick={() => setTallyMode(true)} className="text-xs px-3 py-2 rounded-lg"
@@ -1489,7 +1523,7 @@ function ExerciseBlock({ ex, onAdd, onUpdate, onDelete, onRemove, prs, lastSessi
             {last && (
               <button onClick={repeatLastSet} className="text-xs px-3 py-2 rounded-lg shrink-0"
                 style={{ background: T.panel2, color: T.text }}>
-                ↻ {ex.type === "time" ? fmtClock(last.sec) : ex.type === "weight" ? `${nf(last.weight, last.weight % 1 ? 1 : 0)}kg×${last.reps}` : `${last.reps} Wdh.`}
+                ↻ {ex.type === "time" ? fmtClock(last.sec) : ex.type === "weight" ? `${fmtW(last.weight)}kg×${last.reps}` : `${last.reps} Wdh.`}
               </button>
             )}
             <Btn className="flex-1" onClick={commit} style={{ minWidth: 120 }}>Satz sichern</Btn>
@@ -2286,7 +2320,9 @@ function WorkoutDetail({ ctx, workout }) {
               <div key={s.id || i} className="flex justify-between py-1.5 text-sm" style={{ borderTop: `1px solid ${T.line}` }}>
                 <span className="rig-num text-xs" style={{ color: T.muted }}>Satz {i + 1}</span>
                 <span className="rig-num" style={{ color: T.text }}>
-                  {ex.type === "time" ? fmtClock(s.sec) : ex.type === "weight" ? `${nf(s.weight, s.weight % 1 ? 1 : 0)} kg × ${s.reps}` : `${s.reps} Wdh.`}
+                  {ex.type === "time" ? fmtClock(s.sec)
+                    : ex.type === "weight" ? `${ex.weightMode === "added" ? "+" : ""}${nf(s.weight, s.weight % 1 ? 1 : 0)} kg × ${s.reps}`
+                      : `${s.reps} Wdh.`}
                 </span>
               </div>
             ))}
