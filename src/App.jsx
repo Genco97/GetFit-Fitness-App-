@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import {
-  BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
+  BarChart, Bar, LineChart, Line, AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine,
 } from "recharts";
 import { createClient } from "../utils/supabase/client.js";
 
@@ -353,18 +353,19 @@ const S = {
 /* Holt einen kompletten Datensatz aus der Cloud – für Login auf neuem Gerät und
    für den stillen Abgleich beim Start. owner ist die auth.uid() des Kontos. */
 async function pullAll(owner) {
-  const [profile, workouts, runs, ropes, custom, prs, profileRow] = await Promise.all([
+  const [profile, workouts, runs, ropes, weight, custom, prs, profileRow] = await Promise.all([
     Cloud.get(K.profile, false, owner).catch(() => null),
     Cloud.get(K.workouts, false, owner).catch(() => null),
     Cloud.get(K.runs, false, owner).catch(() => null),
     Cloud.get(K.ropes, false, owner).catch(() => null),
+    Cloud.get(K.weight, false, owner).catch(() => null),
     Cloud.get(K.custom, false, owner).catch(() => null),
     Cloud.get(K.prs, false, owner).catch(() => null),
     Cloud.getProfileRow(owner).catch(() => null),
   ]);
   const social = profileRow ? await Cloud.get(K.social(profileRow.username), true, "").catch(() => null) : null;
   const merged = profileRow ? { ...profile, username: profileRow.username, emoji: profileRow.emoji } : profile;
-  return { profile: merged, workouts, runs, ropes, custom, prs, social };
+  return { profile: merged, workouts, runs, ropes, weight, custom, prs, social };
 }
 
 const K = {
@@ -372,6 +373,7 @@ const K = {
   workouts: "log:workouts",
   runs: "log:runs",
   ropes: "log:rope",
+  weight: "log:weight",
   custom: "custom:exercises",
   prs: "log:prs",
   active: "active:workout",
@@ -548,7 +550,7 @@ function Eyebrow({ children, color }) {
   );
 }
 
-function Stat({ label, value, unit, color }) {
+function Stat({ label, value, unit, color, delta }) {
   const T = useT();
   return (
     <div>
@@ -556,7 +558,16 @@ function Stat({ label, value, unit, color }) {
         {value}
         {unit && <span className="text-xs ml-1" style={{ color: T.muted }}>{unit}</span>}
       </div>
-      <div className="text-xs mt-1" style={{ color: T.muted }}>{label}</div>
+      <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+        <div className="text-xs" style={{ color: T.muted }}>{label}</div>
+        {delta != null && Number.isFinite(delta) && (
+          <span className="rig-num text-[10px] px-1.5 py-0.5 rounded-full" style={{
+            background: T.panel2, color: delta > 0 ? PLATE.green : delta < 0 ? PLATE.red : T.muted,
+          }}>
+            {delta > 0 ? "▲" : delta < 0 ? "▼" : "–"} {Math.abs(delta)}%
+          </span>
+        )}
+      </div>
     </div>
   );
 }
@@ -1797,6 +1808,138 @@ const METRICS = [
   { value: "jumps", label: "Sprünge", color: PLATE.green, unit: "" },
 ];
 
+/* Aktivitäts-Kalender wie bei GitHub/Strava: eine Spalte pro Woche, ein
+   Kästchen pro Tag, dunkler = mehr an dem Tag gemacht. Immer die letzten
+   Wochen, unabhängig vom gewählten Zeitraum oben auf der Seite. */
+function ActivityHeatmap({ workouts, runs, ropes, weeks = 14 }) {
+  const T = useT();
+  const counts = useMemo(() => {
+    const m = new Map();
+    const bump = (ts) => { const k = dayKey(ts); m.set(k, (m.get(k) || 0) + 1); };
+    workouts.forEach((w) => bump(w.startedAt));
+    runs.forEach((r) => bump(r.date));
+    ropes.forEach((r) => bump(r.date));
+    return m;
+  }, [workouts, runs, ropes]);
+
+  const grid = useMemo(() => {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const days = weeks * 7;
+    const cells = [];
+    for (let i = days - 1; i >= 0; i--) {
+      const ts = today.getTime() - i * DAY;
+      cells.push({ ts, count: counts.get(dayKey(ts)) || 0 });
+    }
+    const padStart = (new Date(cells[0].ts).getDay() + 6) % 7; // Montag = 0
+    const padded = [...Array(padStart).fill(null), ...cells];
+    const cols = [];
+    for (let w = 0; w < Math.ceil(padded.length / 7); w++) cols.push(padded.slice(w * 7, w * 7 + 7));
+    return cols;
+  }, [counts, weeks]);
+
+  const opacityFor = (n) => (n <= 0 ? 0 : n === 1 ? 0.4 : n === 2 ? 0.7 : 1);
+
+  return (
+    <div className="flex gap-1 overflow-x-auto rig-scroll pb-1">
+      {grid.map((col, i) => (
+        <div key={i} className="flex flex-col gap-1">
+          {col.map((cell, j) => (
+            <div key={j} style={{
+              width: 11, height: 11, borderRadius: 3,
+              background: cell && cell.count > 0 ? PLATE.yellow : T.panel2,
+              opacity: cell ? (cell.count > 0 ? opacityFor(cell.count) : 1) : 0,
+            }} title={cell ? `${fmtDate(cell.ts)} · ${cell.count}×` : ""} />
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* Kleiner Gewichtsverlauf: Eintrag mit Datum, Linienchart, letzte Einträge
+   löschbar. Der aktuelle Wert bleibt zusätzlich im Profil (Körperdaten) sichtbar. */
+function WeightSection({ ctx }) {
+  const T = useT();
+  const { weightLog, addWeightEntry, deleteWeightEntry, profile } = ctx;
+  const [val, setVal] = useState(profile.weightKg || 70);
+  const [busy, setBusy] = useState(false);
+
+  const sorted = useMemo(() => [...weightLog].sort((a, b) => a.date - b.date), [weightLog]);
+  const chartData = sorted.map((w) => ({ label: fmtDayShort(w.date), weightKg: w.weightKg }));
+  const latest = sorted[sorted.length - 1];
+  const prev = sorted[sorted.length - 2];
+  const trend = latest && prev ? Number((latest.weightKg - prev.weightKg).toFixed(1)) : null;
+
+  const save = async () => {
+    setBusy(true);
+    await addWeightEntry(Number(val));
+    setBusy(false);
+  };
+
+  return (
+    <Card className="p-4 mb-4">
+      <div className="flex items-center justify-between mb-1">
+        <Eyebrow color={PLATE.blue}>Gewichtsverlauf</Eyebrow>
+        {latest && (
+          <div className="text-right">
+            <div className="rig-num text-sm" style={{ color: T.text }}>{nf(latest.weightKg, 1)} kg</div>
+            {trend != null && trend !== 0 && (
+              <div className="text-[10px]" style={{ color: trend > 0 ? PLATE.red : PLATE.green }}>
+                {trend > 0 ? "▲" : "▼"} {nf(Math.abs(trend), 1)} kg seit letztem Eintrag
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {chartData.length >= 2 ? (
+        <div style={{ height: 140 }} className="mt-2 mb-3">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={chartData} margin={{ top: 4, right: 4, left: -6, bottom: 0 }}>
+              <CartesianGrid stroke={T.line} vertical={false} />
+              <XAxis dataKey="label" tick={{ fill: T.muted, fontSize: 10 }} axisLine={false} tickLine={false}
+                interval={Math.max(0, Math.floor(chartData.length / 5))} />
+              <YAxis tick={{ fill: T.muted, fontSize: 10 }} axisLine={false} tickLine={false} width={40}
+                domain={["auto", "auto"]} tickFormatter={(v) => Math.round(v)} />
+              <Tooltip
+                contentStyle={{ background: T.panel, border: `1px solid ${T.line}`, borderRadius: 12, color: T.text, fontSize: 12 }}
+                labelStyle={{ color: T.muted }}
+                formatter={(v) => [`${nf(v, 1)} kg`, ""]} />
+              {profile.goalWeightKg ? (
+                <ReferenceLine y={profile.goalWeightKg} stroke={PLATE.green} strokeDasharray="4 4" />
+              ) : null}
+              <Line type="monotone" dataKey="weightKg" stroke={PLATE.blue} strokeWidth={2} dot={{ r: 3, fill: PLATE.blue }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      ) : (
+        <div className="text-xs mb-3 mt-2" style={{ color: T.muted }}>
+          Trag dein Gewicht ein paar Mal ein, dann erscheint hier ein Verlauf.
+        </div>
+      )}
+
+      <div className="flex items-center gap-2 mb-2">
+        <NumberField value={val} onChange={setVal} step={0.1} min={20} max={300} width={90} suffix="kg" />
+        <Btn className="flex-1" onClick={save} disabled={busy}>Heute eintragen</Btn>
+      </div>
+
+      {sorted.length > 0 && (
+        <div className="mt-2">
+          {[...sorted].reverse().slice(0, 5).map((w, i) => (
+            <div key={w.id} className="flex items-center justify-between py-2 text-sm" style={{ borderTop: i ? `1px solid ${T.line}` : "none" }}>
+              <span style={{ color: T.muted }}>{fmtDate(w.date)}</span>
+              <div className="flex items-center gap-3">
+                <span className="rig-num" style={{ color: T.text }}>{nf(w.weightKg, 1)} kg</span>
+                <button onClick={() => deleteWeightEntry(w.id)} className="text-xs" style={{ color: PLATE.red }}>✕</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function StatsScreen({ ctx }) {
   const T = useT();
   const { workouts, runs, ropes, prs, go } = ctx;
@@ -1809,6 +1952,22 @@ function StatsScreen({ ctx }) {
   const fr = runs.filter((r) => r.date >= since);
   const fj = ropes.filter((r) => r.date >= since);
   const agg = aggregate(fw, fr, fj);
+
+  /* Vergleich zum vorherigen, gleich langen Zeitraum – nicht bei "Gesamt". */
+  const prevSince = period ? since - period * DAY : null;
+  const prevAgg = useMemo(() => {
+    if (!period) return null;
+    return aggregate(
+      workouts.filter((w) => w.startedAt >= prevSince && w.startedAt < since),
+      runs.filter((r) => r.date >= prevSince && r.date < since),
+      ropes.filter((r) => r.date >= prevSince && r.date < since),
+    );
+  }, [workouts, runs, ropes, period, since, prevSince]);
+  const pct = (cur, prev) => {
+    if (!period || prevAgg == null) return null;
+    if (!prev) return cur > 0 ? 100 : null;
+    return Math.round(((cur - prev) / prev) * 100);
+  };
 
   /* Bucketgröße nach Zeitraum */
   const bucket = period <= 30 ? "day" : period <= 90 ? "week" : "month";
@@ -1855,18 +2014,26 @@ function StatsScreen({ ctx }) {
     <div className="px-5 pt-6 pb-28 rig-fade">
       <div className="rig-display text-3xl mb-5" style={{ color: T.text }}>Statistik</div>
 
+      <Card className="p-4 mb-4">
+        <div className="flex items-center justify-between mb-3">
+          <Eyebrow>Aktivität</Eyebrow>
+          <span className="text-xs" style={{ color: T.muted }}>letzte 14 Wochen</span>
+        </div>
+        <ActivityHeatmap workouts={workouts} runs={runs} ropes={ropes} />
+      </Card>
+
       <div className="mb-4"><Segmented value={period} onChange={setPeriod} options={PERIODS} /></div>
 
       <Card className="p-5 mb-4">
         <div className="grid grid-cols-3 gap-4 mb-4">
-          <Stat label="Workouts" value={nf(agg.workouts)} />
-          <Stat label="Wiederholungen" value={nf(agg.reps)} />
-          <Stat label="Sätze" value={nf(agg.sets)} />
+          <Stat label="Workouts" value={nf(agg.workouts)} delta={prevAgg && pct(agg.workouts, prevAgg.workouts)} />
+          <Stat label="Wiederholungen" value={nf(agg.reps)} delta={prevAgg && pct(agg.reps, prevAgg.reps)} />
+          <Stat label="Sätze" value={nf(agg.sets)} delta={prevAgg && pct(agg.sets, prevAgg.sets)} />
         </div>
         <div className="grid grid-cols-3 gap-4 pt-4" style={{ borderTop: `1px solid ${T.line}` }}>
-          <Stat label="Zeit" value={fmtMin(agg.seconds)} />
-          <Stat label="Laufen" value={nf(agg.km, 1)} unit="km" color={PLATE.blue} />
-          <Stat label="Sprünge" value={nf(agg.jumps)} color={PLATE.green} />
+          <Stat label="Zeit" value={fmtMin(agg.seconds)} delta={prevAgg && pct(agg.seconds, prevAgg.seconds)} />
+          <Stat label="Laufen" value={nf(agg.km, 1)} unit="km" color={PLATE.blue} delta={prevAgg && pct(agg.km, prevAgg.km)} />
+          <Stat label="Sprünge" value={nf(agg.jumps)} color={PLATE.green} delta={prevAgg && pct(agg.jumps, prevAgg.jumps)} />
         </div>
       </Card>
 
@@ -1878,21 +2045,30 @@ function StatsScreen({ ctx }) {
         </Eyebrow>
         <div style={{ height: 200 }}>
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={data} margin={{ top: 4, right: 4, left: -22, bottom: 0 }}>
+            <AreaChart data={data} margin={{ top: 4, right: 4, left: -22, bottom: 0 }}>
+              <defs>
+                <linearGradient id="statsAreaFill" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor={exFilter ? PLATE.yellow : m.color} stopOpacity={0.35} />
+                  <stop offset="95%" stopColor={exFilter ? PLATE.yellow : m.color} stopOpacity={0} />
+                </linearGradient>
+              </defs>
               <CartesianGrid stroke={T.line} vertical={false} />
               <XAxis dataKey="label" tick={{ fill: T.muted, fontSize: 10 }} axisLine={false} tickLine={false}
                 interval={Math.max(0, Math.floor(data.length / 6))} />
               <YAxis tick={{ fill: T.muted, fontSize: 10 }} axisLine={false} tickLine={false} width={48} />
               <Tooltip
-                cursor={{ fill: T.panel2 }}
+                cursor={{ stroke: T.line }}
                 contentStyle={{ background: T.panel, border: `1px solid ${T.line}`, borderRadius: 12, color: T.text, fontSize: 12 }}
                 labelStyle={{ color: T.muted }}
                 formatter={(v) => [`${nf(v, metric === "km" ? 2 : 0)} ${exFilter ? "Wdh." : m.unit}`, ""]} />
-              <Bar dataKey={chartKey} fill={exFilter ? PLATE.yellow : m.color} radius={[4, 4, 0, 0]} />
-            </BarChart>
+              <Area type="monotone" dataKey={chartKey} stroke={exFilter ? PLATE.yellow : m.color} strokeWidth={2.5}
+                fill="url(#statsAreaFill)" dot={false} activeDot={{ r: 4 }} />
+            </AreaChart>
           </ResponsiveContainer>
         </div>
       </Card>
+
+      <WeightSection ctx={ctx} />
 
       {exNames.length > 0 && (
         <>
@@ -2858,6 +3034,7 @@ function AppInner() {
   const [workouts, setWorkouts] = useState([]);
   const [runs, setRuns] = useState([]);
   const [ropes, setRopes] = useState([]);
+  const [weightLog, setWeightLog] = useState([]);
   const [custom, setCustom] = useState([]);
   const [prs, setPrs] = useState({});
   const [active, setActive] = useState(null);
@@ -2955,11 +3132,11 @@ function AppInner() {
     (async () => {
       if (authUid === undefined) return; // Session-Check noch nicht abgeschlossen
       if (!authUid) { setProfile(null); setReady(true); return; }
-      const [p, w, r, j, c, pr, a] = await Promise.all([
+      const [p, w, r, j, wt, c, pr, a] = await Promise.all([
         Local.get(K.profile), Local.get(K.workouts), Local.get(K.runs), Local.get(K.ropes),
-        Local.get(K.custom), Local.get(K.prs), Local.get(K.active),
+        Local.get(K.weight), Local.get(K.custom), Local.get(K.prs), Local.get(K.active),
       ]);
-      setProfile(p); setWorkouts(w || []); setRuns(r || []); setRopes(j || []);
+      setProfile(p); setWorkouts(w || []); setRuns(r || []); setRopes(j || []); setWeightLog(wt || []);
       setCustom(c || []); setPrs(pr || {}); setActive(a || null);
       if (p) {
         const soc = await Local.get(K.social(p.username), true);
@@ -2977,6 +3154,7 @@ function AppInner() {
       if (remote?.workouts) { setWorkouts(remote.workouts); Local.set(K.workouts, remote.workouts); }
       if (remote?.runs) { setRuns(remote.runs); Local.set(K.runs, remote.runs); }
       if (remote?.ropes) { setRopes(remote.ropes); Local.set(K.ropes, remote.ropes); }
+      if (remote?.weight) { setWeightLog(remote.weight); Local.set(K.weight, remote.weight); }
       if (remote?.custom) { setCustom(remote.custom); Local.set(K.custom, remote.custom); }
       if (remote?.prs) { setPrs(remote.prs); Local.set(K.prs, remote.prs); }
       if (remote?.social) { setSocial(remote.social); Local.set(K.social(remote.profile.username), remote.social, true); }
@@ -2995,11 +3173,11 @@ function AppInner() {
   const loginExisting = async (data) => {
     S.setSession(data.session); setAuthSession(data.session);
     setProfile(data.profile); setWorkouts(data.workouts || []); setRuns(data.runs || []);
-    setRopes(data.ropes || []); setCustom(data.custom || []); setPrs(data.prs || {});
+    setRopes(data.ropes || []); setWeightLog(data.weight || []); setCustom(data.custom || []); setPrs(data.prs || {});
     setSocial(data.social || { friends: [], requests: [] });
     await Promise.all([
       Local.set(K.profile, data.profile), Local.set(K.workouts, data.workouts || []),
-      Local.set(K.runs, data.runs || []), Local.set(K.ropes, data.ropes || []),
+      Local.set(K.runs, data.runs || []), Local.set(K.ropes, data.ropes || []), Local.set(K.weight, data.weight || []),
       Local.set(K.custom, data.custom || []), Local.set(K.prs, data.prs || {}),
       Local.set(K.social(data.profile.username), data.social || { friends: [], requests: [] }, true),
     ]);
@@ -3128,6 +3306,22 @@ function AppInner() {
     await pushBoard(profile, workouts, runs, next);
   };
 
+  /* --- Gewichtsverlauf: ein Eintrag pro Tag, überschreibt einen bestehenden vom selben Tag --- */
+  const addWeightEntry = async (weightKg, date = Date.now()) => {
+    const day = dayKey(date);
+    const next = [{ id: uid(), date, weightKg }, ...weightLog.filter((w) => dayKey(w.date) !== day)]
+      .sort((a, b) => b.date - a.date);
+    setWeightLog(next);
+    await S.set(K.weight, next, false, owner);
+    await patchProfile({ weightKg });
+    toast({ msg: `Gewicht gespeichert · ${nf(weightKg, 1)} kg` });
+  };
+  const deleteWeightEntry = async (id) => {
+    const next = weightLog.filter((w) => w.id !== id);
+    setWeightLog(next);
+    await S.set(K.weight, next, false, owner);
+  };
+
   /* --- Social --- */
   const sendRequest = async (target) => {
     const key = K.social(target);
@@ -3249,7 +3443,7 @@ function AppInner() {
   /* --- Export / Reset --- */
   const exportData = () => {
     try {
-      const blob = new Blob([JSON.stringify({ profile, workouts, runs, ropes, prs, custom, exportedAt: new Date().toISOString() }, null, 2)],
+      const blob = new Blob([JSON.stringify({ profile, workouts, runs, ropes, weightLog, prs, custom, exportedAt: new Date().toISOString() }, null, 2)],
         { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -3262,10 +3456,10 @@ function AppInner() {
     }
   };
   const resetAll = async () => {
-    setWorkouts([]); setRuns([]); setRopes([]); setPrs({}); setActive(null);
+    setWorkouts([]); setRuns([]); setRopes([]); setWeightLog([]); setPrs({}); setActive(null);
     await Promise.all([
       S.set(K.workouts, [], false, owner), S.set(K.runs, [], false, owner), S.set(K.ropes, [], false, owner),
-      S.set(K.prs, {}, false, owner), S.set(K.active, null, false, owner),
+      S.set(K.weight, [], false, owner), S.set(K.prs, {}, false, owner), S.set(K.active, null, false, owner),
     ]);
     await pushBoard(profile, [], [], []);
     toast({ msg: "Alles gelöscht." });
@@ -3278,9 +3472,9 @@ function AppInner() {
   };
 
   const ctx = {
-    profile, workouts, runs, ropes, prs, active, exercises, board, social, owner,
+    profile, workouts, runs, ropes, weightLog, prs, active, exercises, board, social, owner,
     setActive, go, toast, patchProfile, startWorkout, repeatWorkout, finishWorkout, discardWorkout,
-    deleteWorkout, addRun, deleteRun, addRope, deleteRope, addCustomExercise,
+    deleteWorkout, addRun, deleteRun, addRope, deleteRope, addWeightEntry, deleteWeightEntry, addCustomExercise,
     refreshBoard, sendRequest, acceptRequest, declineRequest, removeFriend, exportData, resetAll,
     notifications, refreshNotifications, markNotificationsRead, sendMessage, loadChat,
     feed, refreshFeed, addPost, deletePost, toggleLike,
