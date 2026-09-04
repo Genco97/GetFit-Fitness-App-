@@ -964,13 +964,35 @@ function Onboarding({ onDone, onLogin }) {
   );
 }
 
+/* Kleiner Fortschrittsring, z. B. fürs Wochenziel. */
+function ProgressRing({ value, max, size = 52, stroke = 5, color }) {
+  const T = useT();
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  const pct = max > 0 ? Math.min(1, value / max) : 0;
+  return (
+    <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={T.panel2} strokeWidth={stroke} />
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color || PLATE.yellow} strokeWidth={stroke}
+        strokeDasharray={`${c * pct} ${c}`} strokeLinecap="round" style={{ transition: "stroke-dasharray .3s ease" }} />
+    </svg>
+  );
+}
+
 /* --- Home --------------------------------------------------------------- */
 function Home({ ctx }) {
   const T = useT();
-  const { profile, workouts, runs, ropes, prs, go, startWorkout, active } = ctx;
+  const { profile, workouts, runs, ropes, prs, go, startWorkout, active, board, refreshBoard } = ctx;
   const agg = useMemo(() => aggregate(workouts, runs, ropes), [workouts, runs, ropes]);
   const days = useMemo(() => activeDays(workouts, runs, ropes), [workouts, runs, ropes]);
   const streak = computeStreak(days);
+
+  useEffect(() => { refreshBoard(); }, [refreshBoard]);
+  const rank = useMemo(() => {
+    const rows = board.filter((b) => b.username).sort((a, b) => (b.workouts || 0) - (a.workouts || 0));
+    const i = rows.findIndex((r) => r.username === profile.username);
+    return i >= 0 && rows.length > 1 ? { place: i + 1, total: rows.length } : null;
+  }, [board, profile.username]);
 
   const weekStart = Date.now() - 7 * DAY, prevStart = Date.now() - 14 * DAY;
   const inRange = (ts, a, b) => ts >= a && ts < b;
@@ -1026,9 +1048,12 @@ function Home({ ctx }) {
               {streak}<span className="text-base ml-2" style={{ color: T.muted }}>{streak === 1 ? "Tag" : "Tage"}</span>
             </div>
           </div>
-          <div className="text-right">
-            <div className="rig-num text-sm" style={{ color: T.text }}>{thisWeek.length}/{goal}</div>
-            <div className="text-xs" style={{ color: T.muted }}>diese Woche</div>
+          <div className="flex flex-col items-center">
+            <div className="relative flex items-center justify-center" style={{ width: 52, height: 52 }}>
+              <ProgressRing value={thisWeek.length} max={goal} size={52} stroke={5} />
+              <span className="rig-num text-xs absolute" style={{ color: T.text }}>{thisWeek.length}/{goal}</span>
+            </div>
+            <div className="text-xs mt-1" style={{ color: T.muted }}>diese Woche</div>
           </div>
         </div>
         <div className="flex gap-1.5 items-end" style={{ height: 26 }}>
@@ -1061,6 +1086,22 @@ function Home({ ctx }) {
           <div className="rig-num text-sm mt-1" style={{ color: PLATE.green }}>{nf(agg.jumps)} Sprünge</div>
         </Card>
       </div>
+
+      {rank && (
+        <Card className="p-4 mb-4 flex items-center justify-between" onClick={() => go("board")}>
+          <div className="flex items-center gap-3">
+            <span className="text-xl">🏆</span>
+            <div>
+              <div className="text-sm" style={{ color: T.text }}>Rangliste</div>
+              <div className="text-xs" style={{ color: T.muted }}>nach Workouts</div>
+            </div>
+          </div>
+          <div className="text-right">
+            <div className="rig-num text-xl" style={{ color: PLATE.yellow }}>#{rank.place}</div>
+            <div className="text-xs" style={{ color: T.muted }}>von {rank.total}</div>
+          </div>
+        </Card>
+      )}
 
       <Card className="p-5 mb-4">
         <div className="grid grid-cols-3 gap-4">
