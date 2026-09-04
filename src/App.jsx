@@ -357,7 +357,7 @@ const S = {
 /* Holt einen kompletten Datensatz aus der Cloud – für Login auf neuem Gerät und
    für den stillen Abgleich beim Start. owner ist die auth.uid() des Kontos. */
 async function pullAll(owner) {
-  const [profile, workouts, runs, ropes, weight, custom, prs, profileRow] = await Promise.all([
+  const [profile, workouts, runs, ropes, weight, custom, prs, achievements, profileRow] = await Promise.all([
     Cloud.get(K.profile, false, owner).catch(() => null),
     Cloud.get(K.workouts, false, owner).catch(() => null),
     Cloud.get(K.runs, false, owner).catch(() => null),
@@ -365,11 +365,12 @@ async function pullAll(owner) {
     Cloud.get(K.weight, false, owner).catch(() => null),
     Cloud.get(K.custom, false, owner).catch(() => null),
     Cloud.get(K.prs, false, owner).catch(() => null),
+    Cloud.get(K.achievements, false, owner).catch(() => null),
     Cloud.getProfileRow(owner).catch(() => null),
   ]);
   const social = profileRow ? await Cloud.get(K.social(profileRow.username), true, "").catch(() => null) : null;
   const merged = profileRow ? { ...profile, username: profileRow.username, emoji: profileRow.emoji } : profile;
-  return { profile: merged, workouts, runs, ropes, weight, custom, prs, social };
+  return { profile: merged, workouts, runs, ropes, weight, custom, prs, achievements, social };
 }
 
 const K = {
@@ -380,6 +381,7 @@ const K = {
   weight: "log:weight",
   custom: "custom:exercises",
   prs: "log:prs",
+  achievements: "log:achievements",
   active: "active:workout",
   board: (u) => `board:${u}`,
   social: (u) => `social:${u}`,
@@ -471,6 +473,29 @@ function detectPRs(prev, workout) {
   }
   return { prs, neu };
 }
+
+/* Meilensteine – rein aus der bestehenden Trainingshistorie abgeleitet
+   (keine eigenen Zähler), einmal freigeschaltet bleiben sie in
+   achievementsUnlocked für immer erhalten, auch nach "Alle Daten löschen". */
+const ACHIEVEMENTS = [
+  { id: "w1", icon: "🥇", title: "Erster Schritt", hint: "1 Workout absolviert", check: (s) => s.workouts >= 1 },
+  { id: "w10", icon: "💪", title: "Dabeigeblieben", hint: "10 Workouts absolviert", check: (s) => s.workouts >= 10 },
+  { id: "w50", icon: "🏋️", title: "Stammgast", hint: "50 Workouts absolviert", check: (s) => s.workouts >= 50 },
+  { id: "w100", icon: "🏆", title: "Hundertschaft", hint: "100 Workouts absolviert", check: (s) => s.workouts >= 100 },
+  { id: "streak7", icon: "🔥", title: "Eine Woche dran", hint: "7 Tage Serie", check: (s) => s.streak >= 7 },
+  { id: "streak30", icon: "🔥", title: "Ein Monat dran", hint: "30 Tage Serie", check: (s) => s.streak >= 30 },
+  { id: "streak100", icon: "🔥", title: "Unaufhaltbar", hint: "100 Tage Serie", check: (s) => s.streak >= 100 },
+  { id: "run1", icon: "🏃", title: "Erste Runde", hint: "Ersten Lauf gespeichert", check: (s) => s.runsCount >= 1 },
+  { id: "run5k", icon: "🎽", title: "5er-Läufer", hint: "Einen Lauf über 5 km", check: (s) => s.maxRunKm >= 5 },
+  { id: "run10k", icon: "🎽", title: "10er-Läufer", hint: "Einen Lauf über 10 km", check: (s) => s.maxRunKm >= 10 },
+  { id: "km50", icon: "🗺️", title: "50 km gesamt", hint: "Insgesamt 50 km gelaufen", check: (s) => s.totalKm >= 50 },
+  { id: "km100", icon: "🗺️", title: "100 km gesamt", hint: "Insgesamt 100 km gelaufen", check: (s) => s.totalKm >= 100 },
+  { id: "jump1000", icon: "🪢", title: "Seilspringer", hint: "1.000 Sprünge insgesamt", check: (s) => s.totalJumps >= 1000 },
+  { id: "jump10000", icon: "🪢", title: "Sprungmeister", hint: "10.000 Sprünge insgesamt", check: (s) => s.totalJumps >= 10000 },
+  { id: "pr1", icon: "⭐", title: "Erster Rekord", hint: "Ersten persönlichen Rekord aufgestellt", check: (s) => s.prCount >= 1 },
+  { id: "pr10", icon: "🌟", title: "Rekordjäger", hint: "10 persönliche Rekorde", check: (s) => s.prCount >= 10 },
+  { id: "reps10000", icon: "🔢", title: "Zehntausend", hint: "10.000 Wiederholungen insgesamt", check: (s) => s.totalReps >= 10000 },
+];
 
 function buildBoardEntry(profile, workouts, runs, ropes) {
   const a = aggregate(workouts, runs, ropes);
@@ -2017,7 +2042,7 @@ function WeightSection({ ctx }) {
 
 function StatsScreen({ ctx }) {
   const T = useT();
-  const { workouts, runs, ropes, prs, go } = ctx;
+  const { workouts, runs, ropes, prs, achievementsUnlocked, go } = ctx;
   const [period, setPeriod] = useState(30);
   const [metric, setMetric] = useState("reps");
   const [exFilter, setExFilter] = useState("");
@@ -2188,6 +2213,23 @@ function StatsScreen({ ctx }) {
           ))}
         </Card>
       )}
+
+      <Eyebrow color={PLATE.yellow}>Abzeichen · {Object.keys(achievementsUnlocked).length}/{ACHIEVEMENTS.length}</Eyebrow>
+      <div className="grid grid-cols-3 gap-2 mb-4">
+        {ACHIEVEMENTS.map((a) => {
+          const unlockedAt = achievementsUnlocked[a.id];
+          return (
+            <Card key={a.id} className="p-3 text-center"
+              style={unlockedAt
+                ? { border: `1px solid ${PLATE.yellow}55`, background: `linear-gradient(160deg, ${T.panel}, ${PLATE.yellow}14)` }
+                : { opacity: 0.5 }}>
+              <div className="text-2xl mb-1" style={{ filter: unlockedAt ? "none" : "grayscale(1)" }}>{a.icon}</div>
+              <div className="text-xs" style={{ color: T.text, fontWeight: unlockedAt ? 600 : 400 }}>{a.title}</div>
+              <div className="text-[10px] mt-1" style={{ color: T.muted }}>{unlockedAt ? fmtDate(unlockedAt) : a.hint}</div>
+            </Card>
+          );
+        })}
+      </div>
 
       <Btn variant="ghost" className="w-full mt-4" onClick={() => go("history")}>Ganze Historie ansehen</Btn>
     </div>
@@ -3134,6 +3176,7 @@ function AppInner() {
   const [weightLog, setWeightLog] = useState([]);
   const [custom, setCustom] = useState([]);
   const [prs, setPrs] = useState({});
+  const [achievementsUnlocked, setAchievementsUnlocked] = useState({});
   const [active, setActive] = useState(null);
   const [board, setBoard] = useState([]);
   const [social, setSocial] = useState({ friends: [], requests: [] });
@@ -3179,6 +3222,36 @@ function AppInner() {
   }, []);
 
   const startCall = useCallback((room, label) => setCall({ room, label, me: profile?.username || "Gast" }), [profile]);
+
+  /* --- Abzeichen: reagiert auf jede Änderung an Workouts/Läufen/Seil/Rekorden,
+     schaltet neu erreichte Meilensteine frei und zeigt sie kurz an. */
+  const achievementStats = useMemo(() => {
+    const agg = aggregate(workouts, runs, ropes);
+    return {
+      workouts: workouts.length, runsCount: runs.length,
+      streak: computeStreak(activeDays(workouts, runs, ropes)),
+      totalKm: agg.km, maxRunKm: runs.reduce((m, r) => Math.max(m, r.distanceKm || 0), 0),
+      totalJumps: agg.jumps, totalReps: agg.reps, prCount: Object.keys(prs).length,
+    };
+  }, [workouts, runs, ropes, prs]);
+
+  useEffect(() => {
+    if (!ready || !profile) return;
+    const newly = ACHIEVEMENTS.filter((a) => !achievementsUnlocked[a.id] && a.check(achievementStats));
+    if (!newly.length) return;
+    const next = { ...achievementsUnlocked };
+    newly.forEach((a) => { next[a.id] = Date.now(); });
+    setAchievementsUnlocked(next);
+    S.set(K.achievements, next, false, owner);
+    setTimeout(() => {
+      toast({
+        kind: "pr",
+        title: newly.length === 1 ? "Abzeichen freigeschaltet" : `${newly.length} neue Abzeichen`,
+        msg: newly.map((a) => `${a.icon} ${a.title}`).join(" · "),
+      });
+    }, toastMsg ? 3000 : 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [achievementStats, ready, profile]);
 
   /* --- Cloud-Verbindungsstatus live spiegeln --- */
   useEffect(() => S.onStatus(setCloudStatusState), []);
@@ -3229,12 +3302,12 @@ function AppInner() {
     (async () => {
       if (authUid === undefined) return; // Session-Check noch nicht abgeschlossen
       if (!authUid) { setProfile(null); setReady(true); return; }
-      const [p, w, r, j, wt, c, pr, a] = await Promise.all([
+      const [p, w, r, j, wt, c, pr, ach, a] = await Promise.all([
         Local.get(K.profile), Local.get(K.workouts), Local.get(K.runs), Local.get(K.ropes),
-        Local.get(K.weight), Local.get(K.custom), Local.get(K.prs), Local.get(K.active),
+        Local.get(K.weight), Local.get(K.custom), Local.get(K.prs), Local.get(K.achievements), Local.get(K.active),
       ]);
       setProfile(p); setWorkouts(w || []); setRuns(r || []); setRopes(j || []); setWeightLog(wt || []);
-      setCustom(c || []); setPrs(pr || {}); setActive(a || null);
+      setCustom(c || []); setPrs(pr || {}); setAchievementsUnlocked(ach || {}); setActive(a || null);
       if (p) {
         const soc = await Local.get(K.social(p.username), true);
         setSocial(soc || { friends: [], requests: [] });
@@ -3254,6 +3327,7 @@ function AppInner() {
       if (remote?.weight) { setWeightLog(remote.weight); Local.set(K.weight, remote.weight); }
       if (remote?.custom) { setCustom(remote.custom); Local.set(K.custom, remote.custom); }
       if (remote?.prs) { setPrs(remote.prs); Local.set(K.prs, remote.prs); }
+      if (remote?.achievements) { setAchievementsUnlocked(remote.achievements); Local.set(K.achievements, remote.achievements); }
       if (remote?.social) { setSocial(remote.social); Local.set(K.social(remote.profile.username), remote.social, true); }
     })();
   }, [authUid]);
@@ -3271,11 +3345,12 @@ function AppInner() {
     S.setSession(data.session); setAuthSession(data.session);
     setProfile(data.profile); setWorkouts(data.workouts || []); setRuns(data.runs || []);
     setRopes(data.ropes || []); setWeightLog(data.weight || []); setCustom(data.custom || []); setPrs(data.prs || {});
+    setAchievementsUnlocked(data.achievements || {});
     setSocial(data.social || { friends: [], requests: [] });
     await Promise.all([
       Local.set(K.profile, data.profile), Local.set(K.workouts, data.workouts || []),
       Local.set(K.runs, data.runs || []), Local.set(K.ropes, data.ropes || []), Local.set(K.weight, data.weight || []),
-      Local.set(K.custom, data.custom || []), Local.set(K.prs, data.prs || {}),
+      Local.set(K.custom, data.custom || []), Local.set(K.prs, data.prs || {}), Local.set(K.achievements, data.achievements || {}),
       Local.set(K.social(data.profile.username), data.social || { friends: [], requests: [] }, true),
     ]);
     /* Falls die Cloud noch keine (vollständigen) Profil-Einstellungen hatte
@@ -3569,7 +3644,7 @@ function AppInner() {
   };
 
   const ctx = {
-    profile, workouts, runs, ropes, weightLog, prs, active, exercises, board, social, owner,
+    profile, workouts, runs, ropes, weightLog, prs, achievementsUnlocked, achievementStats, active, exercises, board, social, owner,
     setActive, go, toast, patchProfile, startWorkout, repeatWorkout, finishWorkout, discardWorkout,
     deleteWorkout, addRun, deleteRun, addRope, deleteRope, addWeightEntry, deleteWeightEntry, addCustomExercise,
     refreshBoard, sendRequest, acceptRequest, declineRequest, removeFriend, exportData, resetAll,
