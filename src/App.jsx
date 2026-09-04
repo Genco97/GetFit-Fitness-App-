@@ -26,11 +26,15 @@ const PLATE = { yellow: "#F2C230", red: "#D6402F", blue: "#2E6FD6", green: "#3FA
 
 const DARK = {
   bg: "#101218", panel: "#191C24", panel2: "#212530", line: "#2B303C",
-  text: "#EFEDE7", muted: "#878D9C", chalk: "#EFEDE7", ...PLATE,
+  text: "#EFEDE7", muted: "#878D9C", chalk: "#EFEDE7",
+  shadow: "0 6px 20px rgba(0,0,0,.28)", glow: "0 0 0 1px rgba(242,194,48,.35), 0 8px 24px rgba(242,194,48,.16)",
+  ...PLATE,
 };
 const LIGHT = {
   bg: "#F4F2ED", panel: "#FFFFFF", panel2: "#EAE7E0", line: "#DBD7CD",
-  text: "#15181F", muted: "#6C7280", chalk: "#15181F", ...PLATE,
+  text: "#15181F", muted: "#6C7280", chalk: "#15181F",
+  shadow: "0 4px 16px rgba(21,24,31,.08)", glow: "0 0 0 1px rgba(242,194,48,.4), 0 8px 20px rgba(242,194,48,.18)",
+  ...PLATE,
 };
 
 const FONT_CSS = `
@@ -510,8 +514,8 @@ function Card({ children, style, onClick, className = "" }) {
   return (
     <div
       onClick={onClick}
-      className={`rounded-2xl ${onClick ? "cursor-pointer" : ""} ${className}`}
-      style={{ background: T.panel, border: `1px solid ${T.line}`, ...style }}
+      className={`rounded-2xl ${onClick ? "cursor-pointer active:scale-[0.98]" : ""} ${className}`}
+      style={{ background: T.panel, border: `1px solid ${T.line}`, boxShadow: T.shadow, transition: "transform .12s ease", ...style }}
     >
       {children}
     </div>
@@ -525,7 +529,7 @@ function Btn({ children, onClick, variant = "solid", tone = PLATE.yellow, disabl
     opacity: disabled ? 0.45 : 1, cursor: disabled ? "not-allowed" : "pointer",
   };
   const looks = {
-    solid: { background: tone, color: "#14161B", border: "1px solid transparent" },
+    solid: { background: tone, color: "#14161B", border: "1px solid transparent", boxShadow: `0 6px 16px ${tone}33` },
     ghost: { background: "transparent", color: T.text, border: `1px solid ${T.line}` },
     quiet: { background: T.panel2, color: T.text, border: "1px solid transparent" },
     danger: { background: "transparent", color: PLATE.red, border: `1px solid ${PLATE.red}` },
@@ -1300,19 +1304,18 @@ function WorkoutScreen({ ctx }) {
       {/* Pausen-Timer */}
       {rest && (
         <div className="px-5 pt-4">
-          <Card className="p-4" style={{ borderColor: PLATE.yellow }}>
-            <div className="flex items-center justify-between mb-3">
-              <div>
+          <Card className="p-4" style={{ border: `1px solid ${PLATE.yellow}55`, background: `linear-gradient(135deg, ${T.panel}, ${PLATE.yellow}14)` }}>
+            <div className="flex items-center gap-4">
+              <ProgressRing value={rest.left} max={rest.total} size={56} stroke={5} />
+              <div className="flex-1">
                 <Eyebrow color={PLATE.yellow}>Pause</Eyebrow>
                 <div className="rig-num text-3xl" style={{ color: T.text }}>{fmtClock(rest.left)}</div>
               </div>
-              <div className="flex gap-2">
-                <Btn variant="quiet" style={{ padding: "8px 12px" }} onClick={() => setRest((r) => ({ ...r, left: r.left + 30, total: r.total + 30 }))}>+30 s</Btn>
-                <Btn variant="ghost" style={{ padding: "8px 12px" }} onClick={() => setRest(null)}>Überspringen</Btn>
+              <div className="flex flex-col gap-2 items-stretch">
+                <button onClick={() => setRest((r) => ({ ...r, left: r.left + 30, total: r.total + 30 }))}
+                  className="rig-num text-xs px-3 py-1.5 rounded-lg active:scale-95" style={{ background: T.panel2, color: T.text, transition: "transform .12s ease" }}>+30 s</button>
+                <button onClick={() => setRest(null)} className="text-xs px-3 py-1.5 rounded-lg active:scale-95" style={{ color: T.muted, transition: "transform .12s ease" }}>Überspringen</button>
               </div>
-            </div>
-            <div style={{ height: 4, borderRadius: 4, background: T.panel2 }}>
-              <div style={{ height: 4, borderRadius: 4, width: `${(rest.left / rest.total) * 100}%`, background: PLATE.yellow, transition: "width 1s linear" }} />
             </div>
           </Card>
         </div>
@@ -1394,28 +1397,35 @@ function ExerciseBlock({ ex, onAdd, onUpdate, onDelete, onRemove, prs, lastSessi
     else onAdd({ reps: last.reps });
   };
 
+  const typeIcon = ex.type === "weight" ? "🏋️" : ex.type === "time" ? "⏱️" : "🤸";
+
   return (
     <Card className="p-4 mb-3">
       <div className="flex justify-between items-start mb-3">
-        <div>
-          <div className="rig-display text-lg" style={{ color: T.text }}>{ex.name}</div>
-          <div className="text-xs" style={{ color: T.muted }}>
-            {ex.category} · {ex.type === "weight" ? "mit Gewicht" : ex.type === "time" ? "auf Zeit" : "Körpergewicht"}
-            {pr && ex.type !== "time" && pr.maxReps ? ` · Bestwert ${pr.maxReps}` : ""}
-          </div>
-          {lastSession && (
-            <div className="text-xs mt-1" style={{ color: T.muted }}>
-              Letztes Mal ({relDay(lastSession.date)}): <span style={{ color: T.text }}>{fmtSetsSummary(lastSession.sets, lastSession.type)}</span>
+        <div className="flex items-start gap-3">
+          <span className="w-10 h-10 rounded-xl flex items-center justify-center text-base shrink-0" style={{ background: T.panel2 }}>{typeIcon}</span>
+          <div>
+            <div className="rig-display text-lg" style={{ color: T.text }}>{ex.name}</div>
+            <div className="text-xs" style={{ color: T.muted }}>
+              {ex.category} · {ex.type === "weight" ? "mit Gewicht" : ex.type === "time" ? "auf Zeit" : "Körpergewicht"}
+              {pr && ex.type !== "time" && pr.maxReps ? ` · Bestwert ${pr.maxReps}` : ""}
             </div>
-          )}
+            {lastSession && (
+              <div className="text-xs mt-1" style={{ color: T.muted }}>
+                Letztes Mal ({relDay(lastSession.date)}): <span style={{ color: T.text }}>{fmtSetsSummary(lastSession.sets, lastSession.type)}</span>
+              </div>
+            )}
+          </div>
         </div>
-        <button onClick={onRemove} className="text-xs px-2 py-1 rounded-lg" style={{ color: T.muted, background: T.panel2 }}>Entfernen</button>
+        <button onClick={onRemove} className="w-8 h-8 rounded-full flex items-center justify-center shrink-0 active:scale-90"
+          style={{ color: T.muted, background: T.panel2, transition: "transform .12s ease" }}>✕</button>
       </div>
 
       {/* Sätze */}
       {ex.sets.map((s, i) => (
-        <div key={s.id} className="flex items-center justify-between py-2" style={{ borderTop: `1px solid ${T.line}` }}>
-          <span className="rig-num text-xs w-14 shrink-0" style={{ color: T.muted }}>Satz {i + 1}</span>
+        <div key={s.id} className="flex items-center justify-between py-2 px-1 mb-1 rounded-lg" style={{ background: T.panel2 }}>
+          <span className="rig-num text-xs w-6 h-6 rounded-full flex items-center justify-center shrink-0 ml-1"
+            style={{ background: T.panel, color: T.muted }}>{i + 1}</span>
           {editing === s.id ? (
             <div className="flex items-center gap-2 flex-1 justify-end">
               {ex.type === "time" ? (
@@ -2323,17 +2333,25 @@ const MEDALS = [
 function Podium({ rows, me, unit, decimals, color, onOpen }) {
   const T = useT();
   return (
-    <div className="flex items-end gap-2 mb-5">
+    <div className="flex items-end gap-2 mb-5 p-4 pt-6 rounded-2xl relative overflow-hidden"
+      style={{ background: T.panel, border: `1px solid ${T.line}`, boxShadow: T.shadow }}>
+      <div className="absolute inset-x-0 top-0" style={{
+        height: 140, background: `radial-gradient(60% 100% at 50% 0%, ${PLATE.yellow}22, transparent)`, pointerEvents: "none",
+      }} />
       {[1, 0, 2].map((idx) => {
         const r = rows[idx];
         const m = MEDALS[idx];
         if (!r) return <div key={idx} className="flex-1" />;
         const isMe = r.username === me;
         return (
-          <div key={r.username} className="flex-1 flex flex-col items-center"
+          <div key={r.username} className="flex-1 flex flex-col items-center relative"
             onClick={isMe ? undefined : () => onOpen(r)} style={{ cursor: isMe ? "default" : "pointer" }}>
+            {m.rank === 1 && <div className="text-lg mb-0.5">👑</div>}
             <div className="rig-display text-xs mb-1" style={{ color: m.tone }}>#{m.rank}</div>
-            <div className="rounded-full mb-2 shrink-0" style={{ border: `2px solid ${m.tone}`, overflow: "hidden" }}>
+            <div className="rounded-full mb-2 shrink-0" style={{
+              border: `2px solid ${m.tone}`, overflow: "hidden",
+              boxShadow: m.rank === 1 ? T.glow : "none",
+            }}>
               <Avatar url={r.avatarUrl} emoji={r.emoji} size={m.avatar} style={{ fontSize: m.avatar * 0.5, background: T.panel }} />
             </div>
             <div className="text-xs text-center truncate w-full mb-0.5" style={{ color: T.text, fontWeight: isMe ? 700 : 500 }}>
@@ -2342,7 +2360,7 @@ function Podium({ rows, me, unit, decimals, color, onOpen }) {
             <div className="rig-num text-sm mb-2 whitespace-nowrap" style={{ color }}>
               {nf(r._v, decimals)} <span className="text-xs" style={{ color: T.muted }}>{unit}</span>
             </div>
-            <div className="w-full rounded-t-lg" style={{ height: m.barH, background: m.tone, opacity: 0.9 }} />
+            <div className="w-full rounded-t-xl" style={{ height: m.barH, background: `linear-gradient(180deg, ${m.tone}, ${m.tone}99)` }} />
           </div>
         );
       })}
@@ -2416,7 +2434,10 @@ function LeaderboardScreen({ ctx }) {
       )}
 
       {myRank > 0 && myRank > 3 && (
-        <Card className="p-4 mb-4" style={{ borderColor: PLATE.yellow }}>
+        <Card className="p-4 mb-4" style={{
+          border: `1px solid ${PLATE.yellow}55`,
+          background: `linear-gradient(135deg, ${T.panel}, ${PLATE.yellow}14)`,
+        }}>
           <div className="flex justify-between items-center">
             <div>
               <Eyebrow color={PLATE.yellow}>Dein Platz</Eyebrow>
@@ -2433,7 +2454,7 @@ function LeaderboardScreen({ ctx }) {
             const i = idx + 3;
             const me = r.username === profile.username;
             return (
-              <Card key={r.username} className="p-3 mb-2" style={me ? { borderColor: PLATE.yellow } : undefined}
+              <Card key={r.username} className="p-3 mb-2" style={me ? { border: `1px solid ${PLATE.yellow}55`, background: `linear-gradient(135deg, ${T.panel}, ${PLATE.yellow}14)` } : undefined}
                 onClick={me ? undefined : () => setOpenFriend(r)}>
                 <div className="flex items-center gap-3">
                   <span className="rig-num text-xs w-7 h-7 rounded-full flex items-center justify-center shrink-0"
@@ -2596,9 +2617,12 @@ function NotificationsSheet({ open, onClose, notifications }) {
     <Sheet open={open} onClose={onClose} title="Benachrichtigungen">
       {notifications.length === 0 && <Empty title="Noch nichts los" hint="Freundschaftsanfragen und Nachrichten erscheinen hier." />}
       {notifications.map((n) => (
-        <Card key={n.id} className="p-3 mb-2" style={!n.read ? { borderColor: PLATE.yellow } : undefined}>
+        <Card key={n.id} className="p-3 mb-2"
+          style={!n.read ? { border: `1px solid ${PLATE.yellow}55`, background: `linear-gradient(135deg, ${T.panel}, ${PLATE.yellow}14)` } : undefined}>
           <div className="flex items-start gap-3">
-            <span className="text-lg">{NOTIF_ICON[n.type] || "🔔"}</span>
+            <span className="text-base w-9 h-9 rounded-full flex items-center justify-center shrink-0" style={{ background: T.panel2 }}>
+              {NOTIF_ICON[n.type] || "🔔"}
+            </span>
             <div className="flex-1">
               <div className="text-sm" style={{ color: T.text }}>{n.text}</div>
               <div className="text-xs mt-1" style={{ color: T.muted }}>{timeAgo(n.createdAt)}</div>
@@ -2610,7 +2634,7 @@ function NotificationsSheet({ open, onClose, notifications }) {
   );
 }
 
-function PostComposer({ onPost }) {
+function PostComposer({ onPost, avatarUrl, emoji }) {
   const T = useT();
   const [text, setText] = useState("");
   const [image, setImage] = useState(null);
@@ -2633,9 +2657,12 @@ function PostComposer({ onPost }) {
 
   return (
     <Card className="p-4 mb-5">
-      <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="Form, Essen, Fortschritt – was gibt's Neues?"
-        rows={3} className="w-full px-3 py-2 rounded-xl text-sm mb-3 rig-scroll"
-        style={{ background: T.panel2, color: T.text, border: `1px solid ${T.line}`, resize: "none" }} />
+      <div className="flex gap-3 mb-3">
+        <Avatar url={avatarUrl} emoji={emoji} size={36} style={{ marginTop: 2 }} />
+        <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="Form, Essen, Fortschritt – was gibt's Neues?"
+          rows={3} className="flex-1 px-3 py-2 rounded-xl text-sm rig-scroll"
+          style={{ background: T.panel2, color: T.text, border: `1px solid ${T.line}`, resize: "none" }} />
+      </div>
       {image && (
         <div className="relative mb-3">
           <img src={image} alt="" className="w-full rounded-xl" style={{ maxHeight: 220, objectFit: "cover" }} />
@@ -2659,7 +2686,7 @@ function PostCard({ post, me, onLike, onDelete, onOpenAuthor }) {
   return (
     <Card className="p-4 mb-3">
       <div className="flex items-center gap-2 mb-3">
-        <button onClick={onOpenAuthor}><Avatar url={post.authorAvatarUrl} emoji={post.authorEmoji} size={32} /></button>
+        <button onClick={onOpenAuthor}><Avatar url={post.authorAvatarUrl} emoji={post.authorEmoji} size={38} /></button>
         <button onClick={onOpenAuthor} className="flex-1 text-sm text-left" style={{ color: T.text, fontWeight: 600 }}>
           {post.authorUsername}{post.authorUsername === me && " · du"}
         </button>
@@ -2667,12 +2694,13 @@ function PostCard({ post, me, onLike, onDelete, onOpenAuthor }) {
       </div>
       {post.text && <div className="text-sm mb-3" style={{ color: T.text, whiteSpace: "pre-wrap" }}>{post.text}</div>}
       {post.image && <img src={post.image} alt="" className="w-full rounded-xl mb-3" style={{ maxHeight: 320, objectFit: "cover" }} />}
-      <div className="flex items-center gap-4">
-        <button onClick={onLike} className="text-sm flex items-center gap-1" style={{ color: liked ? PLATE.red : T.muted }}>
-          {liked ? "❤️" : "🤍"} {(post.likes || []).length > 0 ? post.likes.length : ""}
+      <div className="flex items-center gap-4 pt-3" style={{ borderTop: `1px solid ${T.line}` }}>
+        <button onClick={onLike} className="text-base flex items-center gap-1.5 active:scale-90" style={{ transition: "transform .12s ease", color: liked ? PLATE.red : T.muted }}>
+          {liked ? "❤️" : "🤍"}
+          <span className="rig-num text-xs">{(post.likes || []).length > 0 ? post.likes.length : ""}</span>
         </button>
         {post.authorUsername === me && (
-          <button onClick={onDelete} className="text-xs" style={{ color: T.muted }}>Löschen</button>
+          <button onClick={onDelete} className="text-xs ml-auto" style={{ color: T.muted }}>Löschen</button>
         )}
       </div>
     </Card>
@@ -2716,11 +2744,12 @@ function CommunityScreen({ ctx }) {
     <div className="px-5 pt-6 pb-28 rig-fade">
       <div className="flex items-center justify-between mb-1">
         <div className="rig-display text-3xl" style={{ color: T.text }}>Community</div>
-        <button onClick={openNotifications} className="relative text-xl px-2 py-1">
+        <button onClick={openNotifications} className="relative text-lg w-11 h-11 rounded-2xl flex items-center justify-center"
+          style={{ background: T.panel, border: `1px solid ${T.line}`, boxShadow: T.shadow }}>
           🔔
           {unread > 0 && (
-            <span className="absolute top-0 right-0 rig-num text-[10px] px-1.5 py-0.5 rounded-full"
-              style={{ background: PLATE.red, color: "#fff", minWidth: 16, textAlign: "center" }}>{unread}</span>
+            <span className="absolute -top-1 -right-1 rig-num text-[10px] px-1.5 py-0.5 rounded-full"
+              style={{ background: PLATE.red, color: "#fff", minWidth: 16, textAlign: "center", boxShadow: "0 2px 6px rgba(214,64,47,.5)" }}>{unread}</span>
           )}
         </button>
       </div>
@@ -2733,7 +2762,7 @@ function CommunityScreen({ ctx }) {
 
       {view === "feed" && (
         <>
-          <PostComposer onPost={addPost} />
+          <PostComposer onPost={addPost} avatarUrl={profile.avatarUrl} emoji={profile.emoji} />
           <div className="mb-4">
             <Segmented value={feedScope} onChange={setFeedScope}
               options={[{ value: "freunde", label: "Freunde" }, { value: "alle", label: "Alle" }]} />
@@ -2765,7 +2794,7 @@ function CommunityScreen({ ctx }) {
             return (
               <Card key={u.username} className="p-3 mb-2">
                 <div className="flex items-center gap-3">
-                  <span className="text-lg">{u.emoji}</span>
+                  <Avatar emoji={u.emoji} size={34} />
                   <span className="flex-1 text-sm" style={{ color: T.text }}>{u.username}</span>
                   {isFriend
                     ? <span className="text-xs" style={{ color: PLATE.green }}>befreundet</span>
@@ -2796,17 +2825,20 @@ function CommunityScreen({ ctx }) {
           )}
           {friends.map((u) => {
             const entry = board.find((b) => b.username === u);
+            const iconBtn = "w-9 h-9 rounded-full flex items-center justify-center text-sm shrink-0 active:scale-90";
             return (
               <Card key={u} className="p-3 mb-2">
-                <div className="flex items-center gap-2">
-                  <Avatar url={entry?.avatarUrl} emoji={entry?.emoji} size={28} />
-                  <span className="flex-1 text-sm truncate" style={{ color: T.text }}>{u}</span>
-                  <button onClick={() => setChatFriend(u)} className="text-xs px-2 py-2 rounded-lg" style={{ background: T.panel2, color: PLATE.yellow }}>💬</button>
+                <div className="flex items-center gap-3">
+                  <button onClick={() => setOpenFriend(entry || { username: u })} className="shrink-0">
+                    <Avatar url={entry?.avatarUrl} emoji={entry?.emoji} size={36} />
+                  </button>
+                  <button onClick={() => setOpenFriend(entry || { username: u })} className="flex-1 text-left text-sm truncate" style={{ color: T.text, fontWeight: 500 }}>
+                    {u}
+                  </button>
+                  <button onClick={() => setChatFriend(u)} className={iconBtn} style={{ background: T.panel2, color: PLATE.yellow, transition: "transform .12s ease" }}>💬</button>
                   <button onClick={() => ctx.startCall(roomFor1v1(profile.username, u), `1:1 · du & ${u}`)}
-                    className="text-xs px-2 py-2 rounded-lg" style={{ background: T.panel2, color: PLATE.blue }}>📹</button>
-                  <button onClick={() => setOpenFriend(entry || { username: u })}
-                    className="text-xs px-3 py-2 rounded-lg" style={{ background: T.panel2, color: T.text }}>Profil</button>
-                  <button onClick={() => removeFriend(u)} className="text-xs px-2" style={{ color: PLATE.red }}>Entfernen</button>
+                    className={iconBtn} style={{ background: T.panel2, color: PLATE.blue, transition: "transform .12s ease" }}>📹</button>
+                  <button onClick={() => removeFriend(u)} className={iconBtn} style={{ background: T.panel2, color: PLATE.red, transition: "transform .12s ease" }}>✕</button>
                 </div>
               </Card>
             );
