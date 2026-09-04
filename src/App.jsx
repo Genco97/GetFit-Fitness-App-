@@ -1363,13 +1363,6 @@ function WorkoutScreen({ ctx }) {
   );
 }
 
-/* Kompakte Zusammenfassung einer Satzliste für die "Letztes Mal"-Referenz. */
-function fmtSetsSummary(sets, type) {
-  if (type === "time") return sets.map((s) => fmtClock(s.sec)).join(" · ");
-  if (type === "weight") return sets.map((s) => `${nf(s.weight, s.weight % 1 ? 1 : 0)}kg×${s.reps}`).join(" · ");
-  return sets.map((s) => s.reps).join("/") + " Wdh.";
-}
-
 function ExerciseBlock({ ex, onAdd, onUpdate, onDelete, onRemove, prs, lastSession }) {
   const T = useT();
   const last = ex.sets[ex.sets.length - 1];
@@ -1410,11 +1403,6 @@ function ExerciseBlock({ ex, onAdd, onUpdate, onDelete, onRemove, prs, lastSessi
               {ex.category} · {ex.type === "weight" ? "mit Gewicht" : ex.type === "time" ? "auf Zeit" : "Körpergewicht"}
               {pr && ex.type !== "time" && pr.maxReps ? ` · Bestwert ${pr.maxReps}` : ""}
             </div>
-            {lastSession && (
-              <div className="text-xs mt-1" style={{ color: T.muted }}>
-                Letztes Mal ({relDay(lastSession.date)}): <span style={{ color: T.text }}>{fmtSetsSummary(lastSession.sets, lastSession.type)}</span>
-              </div>
-            )}
           </div>
         </div>
         <button onClick={onRemove} className="w-8 h-8 rounded-full flex items-center justify-center shrink-0 active:scale-90"
