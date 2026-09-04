@@ -2690,8 +2690,18 @@ function ProfileScreen({ ctx }) {
       <Card className="p-4 mb-4">
         <Eyebrow>Persönliche Angaben</Eyebrow>
         <div className="text-xs mb-3" style={{ color: T.muted }}>Nur für dich sichtbar – erscheint nirgends sonst in der App.</div>
-        <div className="mb-4">
-          <Segmented value={profile.gender || ""} onChange={(v) => patchProfile({ gender: v })} options={GENDERS} />
+        <div className="text-xs mb-2" style={{ color: T.muted }}>Geschlecht</div>
+        <div className="flex flex-wrap gap-2 mb-4">
+          {GENDERS.map((g) => {
+            const on = profile.gender === g.value;
+            return (
+              <button key={g.value} onClick={() => patchProfile({ gender: g.value })}
+                className="px-3 py-2 rounded-lg text-sm active:scale-95"
+                style={{ background: on ? PLATE.yellow : T.panel, color: on ? "#14161B" : T.text, border: `1px solid ${T.line}`, fontWeight: on ? 600 : 400 }}>
+                {g.label}
+              </button>
+            );
+          })}
         </div>
         <div>
           <div className="text-xs mb-2" style={{ color: T.muted }}>Geburtsdatum</div>
