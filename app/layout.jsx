@@ -4,6 +4,11 @@ import "leaflet/dist/leaflet.css";
 export const metadata = {
   title: "STRADAA",
   description: "Training, Laufen, Seilspringen — jeder Satz ein Strich.",
+  appleWebApp: { title: "STRADAA", statusBarStyle: "black-translucent" },
+};
+
+export const viewport = {
+  themeColor: "#101218",
 };
 
 export default function RootLayout({ children }) {
