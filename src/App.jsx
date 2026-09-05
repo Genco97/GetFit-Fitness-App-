@@ -213,89 +213,110 @@ function roundRect(ctx, x, y, w, h, r) {
    <canvas> gezeichnet statt per DOM-Screenshot – dadurch unabhängig von
    Browser-Eigenheiten beim Rendern von Verläufen/Web-Fonts. */
 async function drawWorkoutStoryCard(workout, username) {
-  const W = 1080, H = 1920, pad = 90;
+  const W = 1080, H = 1920;
   const canvas = document.createElement("canvas");
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext("2d");
-  const yellow = "#F2C230", textCol = "#EFEDE7", mutedCol = "#878D9C", lineCol = "#2B303C";
+  /* Canvas bleibt komplett transparent (kein Vollflächen-Hintergrund) – wie bei
+     Strava: eine schwebende Karte mit den Werten, der Rest bleibt durchsichtig,
+     damit man beim Teilen (z.B. Instagram Story) ein eigenes Foto darunterlegen kann. */
+  const yellow = "#F2C230", textCol = "#EFEDE7", mutedCol = "#C8CBD4", lineCol = "rgba(255,255,255,.16)";
 
   try {
     await Promise.all([
-      document.fonts.load('700 34px "Barlow Condensed"'), document.fonts.load('700 108px "Barlow Condensed"'),
-      document.fonts.load('700 140px "Barlow Condensed"'), document.fonts.load('500 36px "Inter"'),
-      document.fonts.load('600 30px "Inter"'), document.fonts.load('500 32px "Inter"'),
+      document.fonts.load('700 30px "Barlow Condensed"'), document.fonts.load('700 64px "Barlow Condensed"'),
+      document.fonts.load('500 32px "Inter"'), document.fonts.load('600 22px "Inter"'),
+      document.fonts.load('500 28px "Inter"'), document.fonts.load('500 26px "Inter"'),
     ]);
     await document.fonts.ready;
   } catch { /* Web Fonts noch nicht bereit – Canvas fällt auf System-Font zurück */ }
-
-  const bgGrad = ctx.createLinearGradient(0, 0, 0, H);
-  bgGrad.addColorStop(0, "#191C24");
-  bgGrad.addColorStop(1, "#101218");
-  ctx.fillStyle = bgGrad;
-  ctx.fillRect(0, 0, W, H);
-
   ctx.textBaseline = "alphabetic";
-  ctx.fillStyle = yellow;
-  ctx.font = '700 34px "Barlow Condensed", "Arial Narrow", sans-serif';
-  ctx.fillText("RIG DAILY", pad, 150);
 
-  ctx.fillStyle = textCol;
-  ctx.font = '700 108px "Barlow Condensed", "Arial Narrow", sans-serif';
-  const titleLines = wrapCanvasText(ctx, (workout.title || "Training").toUpperCase(), W - pad * 2, 2);
-  let ty = 320;
-  titleLines.forEach((line) => { ctx.fillText(line, pad, ty); ty += 110; });
+  const cardX = 64, cardW = W - cardX * 2, pad = 56;
+  const innerW = cardW - pad * 2;
 
-  ctx.fillStyle = mutedCol;
-  ctx.font = '500 36px "Inter", system-ui, sans-serif';
-  ctx.fillText(`${fmtDate(workout.startedAt)} · ${fmtMin(workout.durationSec)}`, pad, ty + 20);
+  // Titel-Zeilen vorab messen, damit die Kartenhöhe zum Inhalt passt.
+  ctx.font = '700 64px "Barlow Condensed", "Arial Narrow", sans-serif';
+  const titleLines = wrapCanvasText(ctx, (workout.title || "Training").toUpperCase(), innerW, 2);
 
   const tot = workoutTotals(workout);
   const stats = [
-    { label: "WIEDERHOLUNGEN", value: nf(tot.reps) },
+    { label: "WDH.", value: nf(tot.reps) },
     { label: "SÄTZE", value: nf(tot.sets) },
-    { label: "VOLUMEN", value: `${nf(tot.volume)} kg` },
+    { label: "VOLUMEN", value: `${nf(tot.volume)}kg` },
   ];
-  let sy = ty + 140;
-  stats.forEach((s, i) => {
-    if (i > 0) {
-      ctx.strokeStyle = lineCol; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.moveTo(pad, sy); ctx.lineTo(W - pad, sy); ctx.stroke();
-      sy += 60;
-    }
-    ctx.fillStyle = mutedCol;
-    ctx.font = '600 30px "Inter", system-ui, sans-serif';
-    ctx.fillText(s.label, pad, sy);
-    ctx.fillStyle = yellow;
-    ctx.font = '700 140px "Barlow Condensed", "Arial Narrow", sans-serif';
-    ctx.fillText(s.value, pad, sy + 140);
-    sy += 170;
-  });
-
   const cats = [...new Set((workout.exercises || []).map((e) => e.category))];
-  if (cats.length) {
-    ctx.font = '500 32px "Inter", system-ui, sans-serif';
-    let cx = pad, chipY = sy + 30;
-    cats.forEach((c) => {
-      const label = `${CAT_ICON[c] || ""} ${c}`;
-      const w = ctx.measureText(label).width + 48;
-      if (cx + w > W - pad) return; // eine Zeile reicht für die Story-Karte
-      ctx.fillStyle = "#212530";
-      roundRect(ctx, cx, chipY, w, 64, 32);
-      ctx.fill();
-      ctx.fillStyle = textCol;
-      ctx.fillText(label, cx + 24, chipY + 42);
-      cx += w + 18;
-    });
-  }
+
+  let contentH = 74 /* Wordmark */ + titleLines.length * 72 + 20 + 44 + 30 /* Datum */ + 40 /* Divider */ + 110 /* Stats */ + 34 + 20 /* Footer */;
+  if (cats.length) contentH += 30 + 56;
+
+  const cardY = 1180;
+  const cardH = contentH + pad * 2;
+
+  ctx.fillStyle = "rgba(16,18,24,.82)";
+  roundRect(ctx, cardX, cardY, cardW, cardH, 44);
+  ctx.fill();
+  ctx.strokeStyle = "rgba(255,255,255,.1)";
+  ctx.lineWidth = 2;
+  roundRect(ctx, cardX, cardY, cardW, cardH, 44);
+  ctx.stroke();
+
+  const x0 = cardX + pad;
+  let y = cardY + pad;
+
+  ctx.fillStyle = yellow;
+  ctx.font = '700 30px "Barlow Condensed", "Arial Narrow", sans-serif';
+  ctx.fillText("RIG DAILY", x0, y + 30);
+  y += 74;
+
+  ctx.fillStyle = textCol;
+  ctx.font = '700 64px "Barlow Condensed", "Arial Narrow", sans-serif';
+  titleLines.forEach((line) => { ctx.fillText(line, x0, y + 56); y += 72; });
+  y += 20;
 
   ctx.fillStyle = mutedCol;
   ctx.font = '500 32px "Inter", system-ui, sans-serif';
-  ctx.textAlign = "center";
-  ctx.fillText(`${username} · Rig Daily`, W / 2, H - 90);
-  ctx.textAlign = "left";
+  ctx.fillText(`${fmtDate(workout.startedAt)} · ${fmtMin(workout.durationSec)}`, x0, y + 30);
+  y += 44 + 30;
 
-  ctx.fillStyle = yellow;
-  ctx.fillRect(0, H - 14, W, 14);
+  ctx.strokeStyle = lineCol; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(cardX + cardW - pad, y); ctx.stroke();
+  y += 40;
+
+  const colW = innerW / 3;
+  stats.forEach((s, i) => {
+    const cx = x0 + colW * i;
+    ctx.fillStyle = mutedCol;
+    ctx.font = '600 22px "Inter", system-ui, sans-serif';
+    ctx.fillText(s.label, cx, y);
+    ctx.fillStyle = yellow;
+    ctx.font = '700 64px "Barlow Condensed", "Arial Narrow", sans-serif';
+    ctx.fillText(s.value, cx, y + 62);
+  });
+  y += 110;
+
+  if (cats.length) {
+    y += 30;
+    ctx.font = '500 28px "Inter", system-ui, sans-serif';
+    let cx = x0;
+    cats.forEach((c) => {
+      const label = `${CAT_ICON[c] || ""} ${c}`;
+      const w = ctx.measureText(label).width + 40;
+      if (cx + w > cardX + cardW - pad) return; // eine Zeile reicht für die Story-Karte
+      ctx.fillStyle = "rgba(255,255,255,.08)";
+      roundRect(ctx, cx, y, w, 56, 28);
+      ctx.fill();
+      ctx.fillStyle = textCol;
+      ctx.fillText(label, cx + 20, y + 37);
+      cx += w + 16;
+    });
+    y += 56;
+  }
+
+  y += 20;
+  ctx.fillStyle = mutedCol;
+  ctx.font = '500 26px "Inter", system-ui, sans-serif';
+  ctx.fillText(`${username} · Rig Daily`, x0, y + 20);
 
   return new Promise((resolve) => canvas.toBlob((blob) => resolve(blob), "image/png"));
 }
