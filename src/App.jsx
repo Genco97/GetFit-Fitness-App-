@@ -7,7 +7,7 @@ import {
 import { createClient } from "../utils/supabase/client.js";
 
 /* ============================================================================
-   RIG DAILY — Training, Laufen, Seilspringen
+   STRADAA — Training, Laufen, Seilspringen
    Einzeldatei-MVP. Aufbau der Datei:
      1  Design-Tokens
      2  Hilfsfunktionen
@@ -117,10 +117,10 @@ function haversine(a, b) {
    Beide Seiten landen ohne Absprache im selben Jitsi-Raum. */
 const slug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, "");
 function roomFor1v1(a, b) {
-  return "rigdaily-" + [slug(a), slug(b)].sort().join("-");
+  return "stradaa-" + [slug(a), slug(b)].sort().join("-");
 }
 function roomForTeam(owner) {
-  return "rigdaily-team-" + slug(owner);
+  return "stradaa-team-" + slug(owner);
 }
 
 function beep() {
@@ -237,7 +237,7 @@ async function drawWorkoutStoryCard(workout, username) {
   y += 40;
   ctx.fillStyle = white;
   ctx.font = '700 44px "Barlow Condensed", "Arial Narrow", sans-serif';
-  ctx.fillText("RIG DAILY", cx, y);
+  ctx.fillText("STRADAA", cx, y);
 
   ctx.shadowColor = "transparent";
   ctx.shadowBlur = 0;
@@ -252,14 +252,14 @@ async function shareWorkoutStory(workout, username, toast) {
   try {
     const blob = await drawWorkoutStoryCard(workout, username);
     if (!blob) throw new Error("no-blob");
-    const file = new File([blob], "rig-daily-workout.png", { type: "image/png" });
+    const file = new File([blob], "stradaa-workout.png", { type: "image/png" });
     if (navigator.share && (!navigator.canShare || navigator.canShare({ files: [file] }))) {
-      await navigator.share({ files: [file], title: "Rig Daily" });
+      await navigator.share({ files: [file], title: "STRADAA" });
       return;
     }
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url; a.download = "rig-daily-workout.png";
+    a.href = url; a.download = "stradaa-workout.png";
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 4000);
     toast({ msg: "Bild gespeichert." });
@@ -1093,7 +1093,7 @@ function Onboarding({ onDone, onLogin }) {
       <div className="rig-fade">
         <Tally count={5} color={PLATE.yellow} size={34} />
         <div className="rig-display mt-5" style={{ color: T.text, fontSize: 46, lineHeight: .92 }}>
-          Rig<br />Daily
+          STRADAA
         </div>
         <div className="text-sm mt-4 mb-6" style={{ color: T.muted }}>
           Jeder Satz ein Strich. Trag dich ein, dann steht dein erstes Training in einer Minute.
@@ -4025,7 +4025,7 @@ function ProfileScreen({ ctx }) {
 
       {/* --- Fußbereich --- */}
       <div className="pt-4 text-center" style={{ borderTop: `1px solid ${T.line}` }}>
-        <div className="text-xs" style={{ color: T.muted }}>Rig Daily · MVP</div>
+        <div className="text-xs" style={{ color: T.muted }}>STRADAA · MVP</div>
         {confirmReset ? (
           <Card className="p-4 mt-3 text-left" style={{ borderColor: PLATE.red }}>
             <div className="text-sm mb-3" style={{ color: T.text }}>
@@ -4716,7 +4716,7 @@ function AppInner() {
         { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
-      a.href = url; a.download = `rig-daily-${dayKey(Date.now())}.json`;
+      a.href = url; a.download = `stradaa-${dayKey(Date.now())}.json`;
       document.body.appendChild(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       toast({ msg: "Export als JSON-Datei gestartet." });

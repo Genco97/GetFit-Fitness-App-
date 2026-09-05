@@ -2,7 +2,7 @@ import "./globals.css";
 import "leaflet/dist/leaflet.css";
 
 export const metadata = {
-  title: "Rig Daily",
+  title: "STRADAA",
   description: "Training, Laufen, Seilspringen — jeder Satz ein Strich.",
 };
 
