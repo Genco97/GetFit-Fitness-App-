@@ -173,40 +173,13 @@ function resizeImageFile(file, maxW = 640, quality = 0.6) {
   });
 }
 
-/* Text auf maxLines Zeilen umbrechen (Wortgrenzen), letzte Zeile bei Bedarf
-   mit "…" kürzen – für die Story-Karte, wo Nutzer-Titel beliebig lang sein können. */
-function wrapCanvasText(ctx, text, maxWidth, maxLines = 2) {
-  const words = text.split(" ");
-  const lines = [];
-  let line = "";
-  for (const word of words) {
-    const test = line ? `${line} ${word}` : word;
-    if (ctx.measureText(test).width <= maxWidth || !line) {
-      line = test;
-    } else {
-      lines.push(line);
-      line = word;
-      if (lines.length === maxLines) { line = ""; break; }
-    }
-  }
-  if (line) lines.push(line);
-  if (lines.length > maxLines) lines.length = maxLines;
-  let last = lines[lines.length - 1];
-  if (last) {
-    while (ctx.measureText(last).width > maxWidth && last.length > 1) last = last.slice(0, -1);
-    lines[lines.length - 1] = last;
-  }
-  return lines;
-}
-
-function roundRect(ctx, x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
+/* Einzeiligen Text bei Bedarf mit "…" kürzen – für die Story-Karte, wo
+   Nutzer-Titel beliebig lang sein können. */
+function truncateCanvasText(ctx, text, maxWidth) {
+  if (ctx.measureText(text).width <= maxWidth) return text;
+  let t = text;
+  while (t.length > 1 && ctx.measureText(t + "…").width > maxWidth) t = t.slice(0, -1);
+  return t + "…";
 }
 
 /* Workout als Story-Karte (1080×1920, Instagram-Story-Format) direkt auf einem
@@ -217,106 +190,58 @@ async function drawWorkoutStoryCard(workout, username) {
   const canvas = document.createElement("canvas");
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext("2d");
-  /* Canvas bleibt komplett transparent (kein Vollflächen-Hintergrund) – wie bei
-     Strava: eine schwebende Karte mit den Werten, der Rest bleibt durchsichtig,
-     damit man beim Teilen (z.B. Instagram Story) ein eigenes Foto darunterlegen kann. */
-  const yellow = "#F2C230", textCol = "#EFEDE7", mutedCol = "#C8CBD4", lineCol = "rgba(255,255,255,.16)";
+  /* Canvas bleibt komplett transparent (kein Hintergrund, keine Karte/Box) – wie
+     bei Strava: die Werte schweben direkt über dem Foto, ein Schlagschatten sorgt
+     für Lesbarkeit auf jedem Hintergrund, statt eines Kastens dahinter. */
+  const white = "#FFFFFF", labelCol = "rgba(255,255,255,.82)";
 
   try {
     await Promise.all([
-      document.fonts.load('700 30px "Barlow Condensed"'), document.fonts.load('700 64px "Barlow Condensed"'),
-      document.fonts.load('500 32px "Inter"'), document.fonts.load('600 22px "Inter"'),
-      document.fonts.load('500 28px "Inter"'), document.fonts.load('500 26px "Inter"'),
+      document.fonts.load('700 96px "Barlow Condensed"'), document.fonts.load('600 36px "Inter"'),
+      document.fonts.load('700 44px "Barlow Condensed"'),
     ]);
     await document.fonts.ready;
   } catch { /* Web Fonts noch nicht bereit – Canvas fällt auf System-Font zurück */ }
   ctx.textBaseline = "alphabetic";
+  ctx.textAlign = "center";
+  const cx = W / 2;
 
-  const cardX = 64, cardW = W - cardX * 2, pad = 56;
-  const innerW = cardW - pad * 2;
-
-  // Titel-Zeilen vorab messen, damit die Kartenhöhe zum Inhalt passt.
-  ctx.font = '700 64px "Barlow Condensed", "Arial Narrow", sans-serif';
-  const titleLines = wrapCanvasText(ctx, (workout.title || "Training").toUpperCase(), innerW, 2);
+  ctx.shadowColor = "rgba(0,0,0,.55)";
+  ctx.shadowBlur = 20;
+  ctx.shadowOffsetY = 3;
 
   const tot = workoutTotals(workout);
   const stats = [
-    { label: "WDH.", value: nf(tot.reps) },
+    { label: "WIEDERHOLUNGEN", value: nf(tot.reps) },
     { label: "SÄTZE", value: nf(tot.sets) },
-    { label: "VOLUMEN", value: `${nf(tot.volume)}kg` },
+    { label: "VOLUMEN", value: `${nf(tot.volume)} kg` },
   ];
-  const cats = [...new Set((workout.exercises || []).map((e) => e.category))];
 
-  let contentH = 74 /* Wordmark */ + titleLines.length * 72 + 20 + 44 + 30 /* Datum */ + 40 /* Divider */ + 110 /* Stats */ + 34 + 20 /* Footer */;
-  if (cats.length) contentH += 30 + 56;
+  let y = 420;
 
-  const cardY = 1180;
-  const cardH = contentH + pad * 2;
+  ctx.fillStyle = labelCol;
+  ctx.font = '600 36px "Inter", system-ui, sans-serif';
+  ctx.fillText(truncateCanvasText(ctx, (workout.title || "Training").toUpperCase(), W - 120), cx, y);
+  y += 100;
 
-  ctx.fillStyle = "rgba(16,18,24,.82)";
-  roundRect(ctx, cardX, cardY, cardW, cardH, 44);
-  ctx.fill();
-  ctx.strokeStyle = "rgba(255,255,255,.1)";
-  ctx.lineWidth = 2;
-  roundRect(ctx, cardX, cardY, cardW, cardH, 44);
-  ctx.stroke();
-
-  const x0 = cardX + pad;
-  let y = cardY + pad;
-
-  ctx.fillStyle = yellow;
-  ctx.font = '700 30px "Barlow Condensed", "Arial Narrow", sans-serif';
-  ctx.fillText("RIG DAILY", x0, y + 30);
-  y += 74;
-
-  ctx.fillStyle = textCol;
-  ctx.font = '700 64px "Barlow Condensed", "Arial Narrow", sans-serif';
-  titleLines.forEach((line) => { ctx.fillText(line, x0, y + 56); y += 72; });
-  y += 20;
-
-  ctx.fillStyle = mutedCol;
-  ctx.font = '500 32px "Inter", system-ui, sans-serif';
-  ctx.fillText(`${fmtDate(workout.startedAt)} · ${fmtMin(workout.durationSec)}`, x0, y + 30);
-  y += 44 + 30;
-
-  ctx.strokeStyle = lineCol; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(cardX + cardW - pad, y); ctx.stroke();
-  y += 40;
-
-  const colW = innerW / 3;
-  stats.forEach((s, i) => {
-    const cx = x0 + colW * i;
-    ctx.fillStyle = mutedCol;
-    ctx.font = '600 22px "Inter", system-ui, sans-serif';
+  stats.forEach((s) => {
+    ctx.fillStyle = labelCol;
+    ctx.font = '600 36px "Inter", system-ui, sans-serif';
     ctx.fillText(s.label, cx, y);
-    ctx.fillStyle = yellow;
-    ctx.font = '700 64px "Barlow Condensed", "Arial Narrow", sans-serif';
-    ctx.fillText(s.value, cx, y + 62);
+    ctx.fillStyle = white;
+    ctx.font = '700 96px "Barlow Condensed", "Arial Narrow", sans-serif';
+    ctx.fillText(s.value, cx, y + 96);
+    y += 96 + 74;
   });
-  y += 110;
 
-  if (cats.length) {
-    y += 30;
-    ctx.font = '500 28px "Inter", system-ui, sans-serif';
-    let cx = x0;
-    cats.forEach((c) => {
-      const label = `${CAT_ICON[c] || ""} ${c}`;
-      const w = ctx.measureText(label).width + 40;
-      if (cx + w > cardX + cardW - pad) return; // eine Zeile reicht für die Story-Karte
-      ctx.fillStyle = "rgba(255,255,255,.08)";
-      roundRect(ctx, cx, y, w, 56, 28);
-      ctx.fill();
-      ctx.fillStyle = textCol;
-      ctx.fillText(label, cx + 20, y + 37);
-      cx += w + 16;
-    });
-    y += 56;
-  }
+  y += 40;
+  ctx.fillStyle = white;
+  ctx.font = '700 44px "Barlow Condensed", "Arial Narrow", sans-serif';
+  ctx.fillText("RIG DAILY", cx, y);
 
-  y += 20;
-  ctx.fillStyle = mutedCol;
-  ctx.font = '500 26px "Inter", system-ui, sans-serif';
-  ctx.fillText(`${username} · Rig Daily`, x0, y + 20);
+  ctx.shadowColor = "transparent";
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
 
   return new Promise((resolve) => canvas.toBlob((blob) => resolve(blob), "image/png"));
 }
