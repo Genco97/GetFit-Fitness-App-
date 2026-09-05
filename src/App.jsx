@@ -2073,11 +2073,18 @@ const METRICS = [
   { value: "jumps", label: "Sprünge", color: PLATE.green, unit: "" },
 ];
 
+const HEAT_PERIODS = [
+  { value: 7, label: "7 Tage" }, { value: 30, label: "30 Tage" },
+  { value: 90, label: "3 Monate" }, { value: 365, label: "1 Jahr" },
+];
+
 /* Aktivitäts-Kalender wie bei GitHub/Strava: eine Spalte pro Woche, ein
-   Kästchen pro Tag, dunkler = mehr an dem Tag gemacht. Immer die letzten
-   Wochen, unabhängig vom gewählten Zeitraum oben auf der Seite. */
-function ActivityHeatmap({ workouts, runs, ropes, weeks = 14 }) {
+   Kästchen pro Tag, dunkler = mehr an dem Tag gemacht. Eigener Zeitraum-Filter,
+   unabhängig vom Zeitraum-Filter weiter unten auf der Seite. */
+function ActivityHeatmap({ workouts, runs, ropes }) {
   const T = useT();
+  const [period, setPeriod] = useState(30);
+  const weeks = Math.ceil(period / 7);
   const counts = useMemo(() => {
     const m = new Map();
     const bump = (ts) => { const k = dayKey(ts); m.set(k, (m.get(k) || 0) + 1); };
@@ -2105,19 +2112,22 @@ function ActivityHeatmap({ workouts, runs, ropes, weeks = 14 }) {
   const opacityFor = (n) => (n <= 0 ? 0 : n === 1 ? 0.4 : n === 2 ? 0.7 : 1);
 
   return (
-    <div className="flex gap-1 overflow-x-auto rig-scroll pb-1">
-      {grid.map((col, i) => (
-        <div key={i} className="flex flex-col gap-1">
-          {col.map((cell, j) => (
-            <div key={j} style={{
-              width: 11, height: 11, borderRadius: 3,
-              background: cell && cell.count > 0 ? PLATE.yellow : T.panel2,
-              opacity: cell ? (cell.count > 0 ? opacityFor(cell.count) : 1) : 0,
-            }} title={cell ? `${fmtDate(cell.ts)} · ${cell.count}×` : ""} />
-          ))}
-        </div>
-      ))}
-    </div>
+    <>
+      <div className="mb-3"><Segmented value={period} onChange={setPeriod} options={HEAT_PERIODS} /></div>
+      <div className="flex gap-1 overflow-x-auto rig-scroll pb-1">
+        {grid.map((col, i) => (
+          <div key={i} className="flex flex-col gap-1">
+            {col.map((cell, j) => (
+              <div key={j} style={{
+                width: 11, height: 11, borderRadius: 3,
+                background: cell && cell.count > 0 ? PLATE.yellow : T.panel2,
+                opacity: cell ? (cell.count > 0 ? opacityFor(cell.count) : 1) : 0,
+              }} title={cell ? `${fmtDate(cell.ts)} · ${cell.count}×` : ""} />
+            ))}
+          </div>
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -2402,10 +2412,7 @@ function StatsScreen({ ctx }) {
       <div className="rig-display text-3xl mb-5" style={{ color: T.text }}>Statistik</div>
 
       <Card className="p-4 mb-4">
-        <div className="flex items-center justify-between mb-3">
-          <Eyebrow>Aktivität</Eyebrow>
-          <span className="text-xs" style={{ color: T.muted }}>letzte 14 Wochen</span>
-        </div>
+        <Eyebrow>Aktivität</Eyebrow>
         <ActivityHeatmap workouts={workouts} runs={runs} ropes={ropes} />
       </Card>
 
