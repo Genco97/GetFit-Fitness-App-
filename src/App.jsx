@@ -705,9 +705,11 @@ const CALISTHENICS_ACHIEVEMENTS = [
 
 const ACHIEVEMENTS = [...BASE_ACHIEVEMENTS, ...CALISTHENICS_ACHIEVEMENTS];
 /* Abschluss-Trophäe: erscheint als letztes Abzeichen der Liste und schaltet
-   sich frei, sobald jedes andere Abzeichen bereits freigeschaltet ist. */
+   sich frei, sobald jedes andere Abzeichen bereits freigeschaltet ist.
+   Bewusst anders benannt als die "Alle Abzeichen"-Ordner-Kachel in der
+   Statistik, die nur die Übersicht öffnet und selbst kein Abzeichen ist. */
 ACHIEVEMENTS.push({
-  id: "all_badges", icon: "👑", title: "Alle Abzeichen", hint: "Jedes andere Abzeichen freigeschaltet",
+  id: "all_badges", icon: "👑", title: "Abzeichen-Meister", hint: "Jedes andere Abzeichen freigeschaltet",
   check: (s) => s.unlockedCount >= ACHIEVEMENTS.length - 1,
 });
 
@@ -2722,12 +2724,26 @@ function ProgressPhotosSection({ ctx }) {
   );
 }
 
+function BadgeCard({ a, unlockedAt, T }) {
+  return (
+    <Card className="p-3 text-center"
+      style={unlockedAt
+        ? { border: `1px solid ${PLATE.yellow}55`, background: `linear-gradient(160deg, ${T.panel}, ${PLATE.yellow}14)` }
+        : { opacity: 0.5 }}>
+      <div className="text-2xl mb-1" style={{ filter: unlockedAt ? "none" : "grayscale(1)" }}>{a.icon}</div>
+      <div className="text-xs" style={{ color: T.text, fontWeight: unlockedAt ? 600 : 400 }}>{a.title}</div>
+      <div className="text-[10px] mt-1" style={{ color: T.muted }}>{unlockedAt ? fmtDate(unlockedAt) : a.hint}</div>
+    </Card>
+  );
+}
+
 function StatsScreen({ ctx }) {
   const T = useT();
   const { workouts, runs, ropes, prs, achievementsUnlocked, streak, go } = ctx;
   const [period, setPeriod] = useState(30);
   const [metric, setMetric] = useState("reps");
   const [exFilter, setExFilter] = useState("");
+  const [showAllBadges, setShowAllBadges] = useState(false);
 
   const since = period ? Date.now() - period * DAY : 0;
   const fw = workouts.filter((w) => w.startedAt >= since);
@@ -2804,6 +2820,16 @@ function StatsScreen({ ctx }) {
     const first = entries[0], last = entries[entries.length - 1];
     return { last: last.reps, delta: last.reps - first.reps };
   }, [workouts, exFilter]);
+
+  /* Vorschau statt der ganzen Liste: die zuletzt freigeschalteten zuerst, als
+     Teaser bei zu wenigen unlocked die nächsten noch offenen auffüllen –
+     der Rest liegt hinter dem "Alle Abzeichen"-Ordner in der Sheet. */
+  const badgePreview = useMemo(() => {
+    const unlocked = ACHIEVEMENTS.filter((a) => achievementsUnlocked[a.id])
+      .sort((a, b) => achievementsUnlocked[b.id] - achievementsUnlocked[a.id]);
+    const locked = ACHIEVEMENTS.filter((a) => !achievementsUnlocked[a.id]);
+    return [...unlocked, ...locked].slice(0, 5);
+  }, [achievementsUnlocked]);
 
   return (
     <div className="px-5 pt-6 pb-28 rig-fade">
@@ -2943,20 +2969,19 @@ function StatsScreen({ ctx }) {
 
       <Eyebrow color={PLATE.yellow}>Abzeichen · {Object.keys(achievementsUnlocked).length}/{ACHIEVEMENTS.length}</Eyebrow>
       <div className="grid grid-cols-3 gap-2 mb-4">
-        {ACHIEVEMENTS.map((a) => {
-          const unlockedAt = achievementsUnlocked[a.id];
-          return (
-            <Card key={a.id} className="p-3 text-center"
-              style={unlockedAt
-                ? { border: `1px solid ${PLATE.yellow}55`, background: `linear-gradient(160deg, ${T.panel}, ${PLATE.yellow}14)` }
-                : { opacity: 0.5 }}>
-              <div className="text-2xl mb-1" style={{ filter: unlockedAt ? "none" : "grayscale(1)" }}>{a.icon}</div>
-              <div className="text-xs" style={{ color: T.text, fontWeight: unlockedAt ? 600 : 400 }}>{a.title}</div>
-              <div className="text-[10px] mt-1" style={{ color: T.muted }}>{unlockedAt ? fmtDate(unlockedAt) : a.hint}</div>
-            </Card>
-          );
-        })}
+        {badgePreview.map((a) => <BadgeCard key={a.id} a={a} unlockedAt={achievementsUnlocked[a.id]} T={T} />)}
+        <Card className="p-3 text-center" onClick={() => setShowAllBadges(true)} style={{ border: `1px solid ${T.line}` }}>
+          <div className="text-2xl mb-1">📁</div>
+          <div className="text-xs" style={{ color: T.text, fontWeight: 600 }}>Alle Abzeichen</div>
+          <div className="text-[10px] mt-1" style={{ color: T.muted }}>{Object.keys(achievementsUnlocked).length}/{ACHIEVEMENTS.length} ansehen</div>
+        </Card>
       </div>
+
+      <Sheet open={showAllBadges} onClose={() => setShowAllBadges(false)} title="Alle Abzeichen" full>
+        <div className="grid grid-cols-3 gap-2">
+          {ACHIEVEMENTS.map((a) => <BadgeCard key={a.id} a={a} unlockedAt={achievementsUnlocked[a.id]} T={T} />)}
+        </div>
+      </Sheet>
 
       <Btn variant="ghost" className="w-full mt-4" onClick={() => go("history")}>Ganze Historie ansehen</Btn>
     </div>
