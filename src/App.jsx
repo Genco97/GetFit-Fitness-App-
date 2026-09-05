@@ -1079,6 +1079,16 @@ function ProgressRing({ value, max, size = 52, stroke = 5, color }) {
   );
 }
 
+/* Tageszeit-Gruß auf der Home-Seite: fünf Stufen statt nur drei. */
+function daypartGreeting(hour) {
+  if (hour < 5) return "Nacht";
+  if (hour < 11) return "Morgen";
+  if (hour < 14) return "Mittag";
+  if (hour < 18) return "Nachmittag";
+  if (hour < 22) return "Abend";
+  return "Nacht";
+}
+
 /* --- Home --------------------------------------------------------------- */
 function Home({ ctx }) {
   const T = useT();
@@ -1122,7 +1132,7 @@ function Home({ ctx }) {
       <div className="flex items-start justify-between mb-6">
         <div>
           <div className="rig-display text-3xl" style={{ color: T.text }}>
-            {new Date().getHours() < 11 ? "Morgen" : new Date().getHours() < 18 ? "Servus" : "Abend"}, {profile.username}
+            {daypartGreeting(new Date().getHours())}, {profile.username}
           </div>
           <div className="text-sm mt-1" style={{ color: T.muted }}>{fmtDate(Date.now())}</div>
         </div>
