@@ -3160,12 +3160,45 @@ function NewChallengeSheet({ open, onClose, friends, presetFriend, onCreate }) {
   );
 }
 
-function PostComposer({ onPost, avatarUrl, emoji }) {
+const ACTIVITY_KIND = {
+  workout: { icon: "🏋️", color: PLATE.yellow, label: "Workout" },
+  run: { icon: "🏃", color: PLATE.blue, label: "Lauf" },
+  rope: { icon: "🪢", color: PLATE.green, label: "Seilspringen" },
+};
+
+/* Letzte Trainings-, Lauf- und Sprung-Einheiten gemischt, neueste zuerst –
+   Auswahl für "Aktivität teilen" im Composer. */
+function recentActivityOptions(workouts, runs, ropes) {
+  const items = [
+    ...workouts.slice(0, 6).map((w) => ({
+      kind: "workout", id: w.id, date: w.startedAt, title: w.title || "Training",
+      reps: workoutTotals(w).reps, durationSec: w.durationSec,
+    })),
+    ...runs.slice(0, 6).map((r) => ({
+      kind: "run", id: r.id, date: r.date, title: "Lauf", distanceKm: r.distanceKm, durationSec: r.durationSec,
+    })),
+    ...ropes.slice(0, 6).map((r) => ({
+      kind: "rope", id: r.id, date: r.date, title: "Seilspringen", jumps: r.totalJumps, durationSec: r.durationSec,
+    })),
+  ];
+  return items.sort((a, b) => b.date - a.date).slice(0, 6);
+}
+function activityStatLine(a) {
+  if (a.kind === "run") return `${nf(a.distanceKm, 2)} km · ${fmtMin(a.durationSec)}`;
+  if (a.kind === "rope") return `${nf(a.jumps)} Sprünge · ${fmtMin(a.durationSec)}`;
+  return `${nf(a.reps)} Wdh. · ${fmtMin(a.durationSec)}`;
+}
+
+function PostComposer({ onPost, avatarUrl, emoji, workouts, runs, ropes }) {
   const T = useT();
   const [text, setText] = useState("");
   const [image, setImage] = useState(null);
+  const [activity, setActivity] = useState(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const fileRef = useRef(null);
+
+  const options = useMemo(() => recentActivityOptions(workouts, runs, ropes), [workouts, runs, ropes]);
 
   const pickImage = async (e) => {
     const file = e.target.files?.[0];
@@ -3175,20 +3208,21 @@ function PostComposer({ onPost, avatarUrl, emoji }) {
   };
 
   const submit = async () => {
-    if (!text.trim() && !image) return;
+    if (!text.trim() && !image && !activity) return;
     setBusy(true);
-    await onPost(text, image);
-    setText(""); setImage(null); setBusy(false);
+    await onPost(text, image, activity);
+    setText(""); setImage(null); setActivity(null); setPickerOpen(false); setBusy(false);
   };
 
   return (
-    <Card className="p-4 mb-5">
+    <Card className="p-4 mb-5" style={{ background: `linear-gradient(160deg, ${T.panel}, ${PLATE.yellow}0d)` }}>
       <div className="flex gap-3 mb-3">
-        <Avatar url={avatarUrl} emoji={emoji} size={36} style={{ marginTop: 2 }} />
+        <Avatar url={avatarUrl} emoji={emoji} size={40} style={{ marginTop: 2 }} />
         <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder="Form, Essen, Fortschritt – was gibt's Neues?"
           rows={3} className="flex-1 px-3 py-2 rounded-xl text-sm rig-scroll"
           style={{ background: T.panel2, color: T.text, border: `1px solid ${T.line}`, resize: "none" }} />
       </div>
+
       {image && (
         <div className="relative mb-3">
           <img src={image} alt="" className="w-full rounded-xl" style={{ maxHeight: 220, objectFit: "cover" }} />
@@ -3196,11 +3230,46 @@ function PostComposer({ onPost, avatarUrl, emoji }) {
             style={{ background: "rgba(6,7,10,.7)", color: "#EFEDE7" }}>✕</button>
         </div>
       )}
+
+      {activity && (() => {
+        const k = ACTIVITY_KIND[activity.kind];
+        return (
+          <div className="mb-3 p-3 rounded-xl flex items-center gap-3"
+            style={{ background: `linear-gradient(135deg, ${T.panel2}, ${k.color}22)`, border: `1px solid ${k.color}55` }}>
+            <span className="text-xl">{k.icon}</span>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm truncate" style={{ color: T.text, fontWeight: 600 }}>{activity.title}</div>
+              <div className="text-xs rig-num" style={{ color: k.color }}>{activityStatLine(activity)}</div>
+            </div>
+            <button onClick={() => setActivity(null)} className="text-xs px-2 py-1 rounded-lg shrink-0" style={{ background: "rgba(6,7,10,.35)", color: T.text }}>✕</button>
+          </div>
+        );
+      })()}
+
+      {pickerOpen && (
+        <div className="flex gap-2 mb-3 overflow-x-auto rig-scroll pb-1">
+          {options.length === 0 && <div className="text-xs py-2" style={{ color: T.muted }}>Noch nichts erfasst.</div>}
+          {options.map((a) => {
+            const k = ACTIVITY_KIND[a.kind];
+            const on = activity && activity.kind === a.kind && activity.id === a.id;
+            return (
+              <button key={a.kind + a.id} onClick={() => { setActivity(on ? null : a); setPickerOpen(false); }}
+                className="shrink-0 text-left px-3 py-2 rounded-xl"
+                style={{ background: on ? k.color : T.panel2, color: on ? "#14161B" : T.text, border: `1px solid ${T.line}`, minWidth: 132 }}>
+                <div className="text-xs" style={{ fontWeight: 600 }}>{k.icon} {a.title}</div>
+                <div className="text-[10px] rig-num mt-0.5" style={{ color: on ? "#14161B99" : T.muted }}>{activityStatLine(a)}</div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       <div className="flex gap-2">
         <input ref={fileRef} type="file" accept="image/*" hidden onChange={pickImage} />
         <Btn variant="quiet" onClick={() => fileRef.current?.click()}>📷 Foto</Btn>
+        <Btn variant="quiet" onClick={() => setPickerOpen((v) => !v)}>🏋️ Aktivität</Btn>
         <div className="flex-1" />
-        <Btn onClick={submit} disabled={busy || (!text.trim() && !image)}>Posten</Btn>
+        <Btn onClick={submit} disabled={busy || (!text.trim() && !image && !activity)}>Posten</Btn>
       </div>
     </Card>
   );
@@ -3209,8 +3278,10 @@ function PostComposer({ onPost, avatarUrl, emoji }) {
 function PostCard({ post, me, onLike, onDelete, onOpenAuthor }) {
   const T = useT();
   const liked = (post.likes || []).includes(me);
+  const count = (post.likes || []).length;
+  const k = post.activity ? ACTIVITY_KIND[post.activity.kind] : null;
   return (
-    <Card className="p-4 mb-3">
+    <Card className="p-4 mb-3" style={k ? { border: `1px solid ${k.color}40` } : undefined}>
       <div className="flex items-center gap-2 mb-3">
         <button onClick={onOpenAuthor}><Avatar url={post.authorAvatarUrl} emoji={post.authorEmoji} size={38} /></button>
         <button onClick={onOpenAuthor} className="flex-1 text-sm text-left" style={{ color: T.text, fontWeight: 600 }}>
@@ -3218,18 +3289,76 @@ function PostCard({ post, me, onLike, onDelete, onOpenAuthor }) {
         </button>
         <span className="text-xs" style={{ color: T.muted }}>{timeAgo(post.createdAt)}</span>
       </div>
+
+      {k && (
+        <div className="flex items-center gap-3 p-3 mb-3 rounded-xl"
+          style={{ background: `linear-gradient(135deg, ${T.panel2}, ${k.color}22)`, border: `1px solid ${k.color}40` }}>
+          <span className="text-2xl">{k.icon}</span>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm truncate rig-display" style={{ color: T.text }}>{post.activity.title}</div>
+            <div className="text-xs rig-num mt-0.5" style={{ color: k.color }}>{activityStatLine(post.activity)}</div>
+          </div>
+        </div>
+      )}
+
       {post.text && <div className="text-sm mb-3" style={{ color: T.text, whiteSpace: "pre-wrap" }}>{post.text}</div>}
       {post.image && <img src={post.image} alt="" className="w-full rounded-xl mb-3" style={{ maxHeight: 320, objectFit: "cover" }} />}
       <div className="flex items-center gap-4 pt-3" style={{ borderTop: `1px solid ${T.line}` }}>
-        <button onClick={onLike} className="text-base flex items-center gap-1.5 active:scale-90" style={{ transition: "transform .12s ease", color: liked ? PLATE.red : T.muted }}>
-          {liked ? "❤️" : "🤍"}
-          <span className="rig-num text-xs">{(post.likes || []).length > 0 ? post.likes.length : ""}</span>
+        <button onClick={onLike} className="text-sm flex items-center gap-1.5 active:scale-90 px-3 py-1.5 rounded-full"
+          style={{ transition: "transform .12s ease", background: liked ? `${PLATE.yellow}22` : "transparent", color: liked ? PLATE.yellow : T.muted }}>
+          🔥 <span className="rig-num text-xs">{count > 0 ? count : "Kudos"}</span>
         </button>
         {post.authorUsername === me && (
           <button onClick={onDelete} className="text-xs ml-auto" style={{ color: T.muted }}>Löschen</button>
         )}
       </div>
     </Card>
+  );
+}
+
+/* "Wer war heute schon aktiv" – Story-Leiste wie bei Instagram/Snapchat, aber
+   fitness-eigen: der Ring leuchtet, wenn die Person heute trainiert hat
+   (Signal: updatedAt des Board-Eintrags, wird bei jedem Workout/Lauf/Sprung
+   neu gesetzt), die Flamme zeigt eine laufende Serie. */
+function activeToday(entry) {
+  return !!entry && dayKey(entry.updatedAt) === dayKey(Date.now());
+}
+
+function StoryStrip({ me, board, friends, onOpen }) {
+  const T = useT();
+  const people = useMemo(() => [me, ...friends]
+    .map((u) => board.find((b) => b.username === u) || { username: u })
+    .sort((a, b) => (activeToday(b) - activeToday(a)) || (b.streak || 0) - (a.streak || 0)),
+  [me, friends, board]);
+
+  if (people.length <= 1) return null;
+
+  return (
+    <div className="flex gap-3 mb-5 overflow-x-auto rig-scroll pb-1">
+      {people.map((p) => {
+        const active = activeToday(p);
+        const isMe = p.username === me;
+        return (
+          <button key={p.username} onClick={() => !isMe && onOpen(p)} className="flex flex-col items-center gap-1 shrink-0" style={{ width: 62 }}>
+            <div className="relative">
+              <div className="rounded-full p-[2px]" style={{ background: active ? `linear-gradient(135deg, ${PLATE.yellow}, ${PLATE.red})` : T.line }}>
+                <div className="rounded-full p-[2px]" style={{ background: T.bg }}>
+                  <Avatar url={p.avatarUrl} emoji={p.emoji} size={52} />
+                </div>
+              </div>
+              {p.streak > 0 && (
+                <span className="absolute -bottom-1 -right-1 text-[10px] rig-num px-1 rounded-full" style={{ background: PLATE.red, color: "#fff" }}>
+                  🔥{p.streak}
+                </span>
+              )}
+            </div>
+            <span className="text-[10px] truncate" style={{ color: active ? T.text : T.muted, maxWidth: 60 }}>
+              {isMe ? "Du" : p.username}
+            </span>
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -3240,6 +3369,7 @@ function CommunityScreen({ ctx }) {
     feed, refreshFeed, addPost, toggleLike, deletePost,
     notifications, refreshNotifications, markNotificationsRead, refreshBoard,
     challenges, refreshChallenges, startChallenge, respondChallenge,
+    workouts, runs, ropes,
   } = ctx;
   const [view, setView] = useState("feed");
   const [feedScope, setFeedScope] = useState("freunde");
@@ -3269,6 +3399,7 @@ function CommunityScreen({ ctx }) {
     : feed;
 
   const openNotifications = () => { setNotifOpen(true); markNotificationsRead(); };
+  const activeTodayCount = [profile.username, ...friends].filter((u) => activeToday(board.find((b) => b.username === u))).length;
 
   return (
     <div className="px-5 pt-6 pb-28 rig-fade">
@@ -3283,7 +3414,11 @@ function CommunityScreen({ ctx }) {
           )}
         </button>
       </div>
-      <div className="text-sm mb-5" style={{ color: T.muted }}>Feed, Freunde und Chat an einem Ort.</div>
+      <div className="text-sm mb-5" style={{ color: activeTodayCount > 0 ? PLATE.yellow : T.muted }}>
+        {activeTodayCount > 0
+          ? `🔥 ${activeTodayCount} aus deiner Crew ${activeTodayCount === 1 ? "ist" : "sind"} heute schon aktiv`
+          : "Feed, Freunde und Chat an einem Ort."}
+      </div>
 
       <div className="mb-5">
         <Segmented value={view} onChange={setView}
@@ -3296,7 +3431,10 @@ function CommunityScreen({ ctx }) {
 
       {view === "feed" && (
         <>
-          <PostComposer onPost={addPost} avatarUrl={profile.avatarUrl} emoji={profile.emoji} />
+          <StoryStrip me={profile.username} board={board} friends={friends}
+            onOpen={(p) => setOpenFriend(p)} />
+          <PostComposer onPost={addPost} avatarUrl={profile.avatarUrl} emoji={profile.emoji}
+            workouts={workouts} runs={runs} ropes={ropes} />
           <div className="mb-4">
             <Segmented value={feedScope} onChange={setFeedScope}
               options={[{ value: "freunde", label: "Freunde" }, { value: "alle", label: "Alle" }]} />
@@ -3359,15 +3497,20 @@ function CommunityScreen({ ctx }) {
           )}
           {friends.map((u) => {
             const entry = board.find((b) => b.username === u);
+            const online = activeToday(entry);
             const iconBtn = "w-9 h-9 rounded-full flex items-center justify-center text-sm shrink-0 active:scale-90";
             return (
               <Card key={u} className="p-3 mb-2">
                 <div className="flex items-center gap-3">
-                  <button onClick={() => setOpenFriend(entry || { username: u })} className="shrink-0">
+                  <button onClick={() => setOpenFriend(entry || { username: u })} className="shrink-0 relative">
                     <Avatar url={entry?.avatarUrl} emoji={entry?.emoji} size={36} />
+                    {online && (
+                      <span className="absolute -bottom-0.5 -right-0.5 rounded-full" style={{ width: 11, height: 11, background: PLATE.green, border: `2px solid ${T.panel}` }} />
+                    )}
                   </button>
                   <button onClick={() => setOpenFriend(entry || { username: u })} className="flex-1 text-left text-sm truncate" style={{ color: T.text, fontWeight: 500 }}>
                     {u}
+                    {online && <span className="text-[10px] ml-2" style={{ color: PLATE.green }}>heute aktiv</span>}
                   </button>
                   <button onClick={() => setChatFriend(u)} className={iconBtn} style={{ background: T.panel2, color: PLATE.yellow, transition: "transform .12s ease" }}>💬</button>
                   <button onClick={() => { setChallengeFriend(u); setNewChallengeOpen(true); }}
@@ -4172,13 +4315,13 @@ function AppInner() {
   };
 
   /* --- Community-Feed (Fotos, Fortschritt, Text) --- */
-  const addPost = async (text, image) => {
+  const addPost = async (text, image, activity) => {
     if (!profile) return;
     const key = K.feed(profile.username);
     const cur = (await S.get(key, true)) || { posts: [] };
     const post = {
       id: uid(), authorUsername: profile.username, authorEmoji: profile.emoji, authorAvatarUrl: profile.avatarUrl || null,
-      text: (text || "").trim().slice(0, 500), image: image || null, createdAt: Date.now(), likes: [],
+      text: (text || "").trim().slice(0, 500), image: image || null, activity: activity || null, createdAt: Date.now(), likes: [],
     };
     const posts = [post, ...(cur.posts || [])].slice(0, 30);
     await S.set(key, { posts }, true);
