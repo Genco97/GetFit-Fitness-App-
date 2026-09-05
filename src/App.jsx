@@ -195,6 +195,31 @@ const BASE_EX = [
   ["Jumping Jacks", "Ganzkörper", "reps"], ["Kettlebell Swings", "Ganzkörper", "weight"],
 ].map(([name, category, type]) => ({ id: "b_" + name.toLowerCase().replace(/[^a-z]/g, ""), name, category, type, custom: false }));
 
+/* Feste Standard-Splits für den Workout-Schnellstart, aus dem eingebauten
+   Übungskatalog zusammengestellt (bleiben also immer verfügbar). */
+const STANDARD_TEMPLATES = [
+  { title: "Push", hint: "Brust · Schultern · Trizeps", names: ["Bankdrücken", "Schulterdrücken", "Dips", "Trizeps Extensions"] },
+  { title: "Pull", hint: "Rücken · Bizeps", names: ["Klimmzüge", "Rudern", "Kreuzheben", "Bizeps-Curls"] },
+  { title: "Beine", hint: "Quads · Beinbizeps · Waden", names: ["Kniebeugen", "Ausfallschritte", "Bulgarian Split Squats", "Wadenheben"] },
+  { title: "Ganzkörper", hint: "Alles auf einmal", names: ["Burpees", "Kettlebell Swings", "Mountain Climbers", "Plank"] },
+];
+
+/* Pro Muskelgruppe: wann zuletzt überhaupt trainiert + Sätze diese Woche –
+   für die Home- und die Workout-Seite ("Diese Woche noch offen"). */
+function muscleGroupsStatus(workouts, weekStart) {
+  const lastTrained = {}, setsThisWeek = {};
+  CATS.forEach((c) => { lastTrained[c] = null; setsThisWeek[c] = 0; });
+  for (const w of workouts) {
+    for (const ex of w.exercises || []) {
+      const cat = ex.category;
+      if (!(cat in lastTrained)) continue;
+      if (!lastTrained[cat] || w.startedAt > lastTrained[cat]) lastTrained[cat] = w.startedAt;
+      if (w.startedAt >= weekStart) setsThisWeek[cat] += (ex.sets || []).length;
+    }
+  }
+  return CATS.map((c) => ({ category: c, trained: setsThisWeek[c] > 0, sets: setsThisWeek[c], lastTrained: lastTrained[c] }));
+}
+
 /* --------------------------------------------------------- 4 SPEICHER      */
 /* Zwei Schichten, ein Interface (S):
      Local  – window.storage (bzw. In-Memory als Notnagel). Sofort da, funktioniert
@@ -1076,19 +1101,7 @@ function Home({ ctx }) {
 
   /* Muskelgruppen: pro Kategorie Sätze diese Woche + wann zuletzt überhaupt trainiert,
      damit man auf einen Blick sieht, was diese Woche noch fehlt. */
-  const muscleGroups = useMemo(() => {
-    const lastTrained = {}, setsThisWeek = {};
-    CATS.forEach((c) => { lastTrained[c] = null; setsThisWeek[c] = 0; });
-    for (const w of workouts) {
-      for (const ex of w.exercises || []) {
-        const cat = ex.category;
-        if (!(cat in lastTrained)) continue;
-        if (!lastTrained[cat] || w.startedAt > lastTrained[cat]) lastTrained[cat] = w.startedAt;
-        if (w.startedAt >= weekStart) setsThisWeek[cat] += (ex.sets || []).length;
-      }
-    }
-    return CATS.map((c) => ({ category: c, trained: setsThisWeek[c] > 0, sets: setsThisWeek[c], lastTrained: lastTrained[c] }));
-  }, [workouts, weekStart]);
+  const muscleGroups = useMemo(() => muscleGroupsStatus(workouts, weekStart), [workouts, weekStart]);
 
   /* 14-Tage-Streifen: ein Strich pro aktivem Tag, per Streak-Schutz überbrückte Tage extra markiert */
   const strip = Array.from({ length: 14 }, (_, i) => {
@@ -1289,7 +1302,7 @@ function WorkoutRow({ w, onClick }) {
 /* --- Aktives Workout ---------------------------------------------------- */
 function WorkoutScreen({ ctx }) {
   const T = useT();
-  const { active, setActive, finishWorkout, discardWorkout, exercises, addCustomExercise, profile, toast, startWorkout, repeatWorkout, workouts } = ctx;
+  const { active, setActive, finishWorkout, discardWorkout, exercises, addCustomExercise, profile, toast, startWorkout, repeatWorkout, workouts, go } = ctx;
   const [pickerOpen, setPickerOpen] = useState(false);
   const [rest, setRest] = useState(null); // {left, total}
   const [tick, setTick] = useState(0);
@@ -1319,37 +1332,99 @@ function WorkoutScreen({ ctx }) {
   }, [rest, toast]);
 
   if (!active) {
-    /* Vorlagen für den Schnellstart: letzte Workouts, nach Titel/Übungen entdoppelt –
-       antippen füllt ein neues Training mit denselben Übungen (wie bei Hevy & Co). */
-    const templates = [];
-    const seen = new Set();
-    for (const w of workouts) {
-      const key = w.title || (w.exercises || []).map((e) => e.name).join("+");
-      if (seen.has(key)) continue;
-      seen.add(key);
-      templates.push(w);
-      if (templates.length >= 4) break;
-    }
+    const weekStart = Date.now() - 7 * DAY;
+    const missingGroups = muscleGroupsStatus(workouts, weekStart).filter((g) => !g.trained);
+    const lastWorkout = workouts[0] || null;
+    const recentHistory = workouts.slice(0, 5);
+
+    /* Feste Standard-Splits, aufgelöst gegen den echten Übungskatalog (eingebaut + eigene) –
+       so bleiben es immer vollständige, sofort startbare Vorlagen. */
+    const templates = STANDARD_TEMPLATES.map((t) => ({
+      ...t,
+      exercises: t.names.map((n) => exercises.find((e) => e.name === n)).filter(Boolean)
+        .map((e) => ({ exerciseId: e.id, name: e.name, category: e.category, type: e.type })),
+    })).filter((t) => t.exercises.length > 0);
+
+    const startForCategory = (category) => {
+      const picks = exercises.filter((e) => e.category === category).slice(0, 3)
+        .map((e) => ({ exerciseId: e.id, name: e.name, category: e.category, type: e.type }));
+      startWorkout({ title: category, exercises: picks });
+    };
+
+    const daysAgo = lastWorkout ? Math.floor((Date.now() - lastWorkout.startedAt) / DAY) : null;
+    const whenLabel = daysAgo == null ? "" : daysAgo <= 0 ? "Heute" : daysAgo === 1 ? "Gestern" : `vor ${daysAgo} Tagen`;
+
     return (
       <div className="px-5 pt-6 pb-28 rig-fade">
         <div className="rig-display text-3xl mb-6" style={{ color: T.text }}>Workout</div>
         <Empty title="Kein Training aktiv" hint="Die Uhr steht erst, wenn du im Workout auf Start drückst."
           action={<Btn onClick={startWorkout}>Workout starten</Btn>} />
-        {templates.length > 0 && (
+
+        {lastWorkout ? (
+          <Card className="p-4 mb-4" style={{ background: `linear-gradient(135deg, ${T.panel}, ${PLATE.yellow}14)` }} onClick={() => repeatWorkout(lastWorkout)}>
+            <Eyebrow>Letztes Training</Eyebrow>
+            <div className="flex items-center justify-between gap-3">
+              <div style={{ minWidth: 0 }}>
+                <div className="rig-display text-lg" style={{ color: T.text }}>{lastWorkout.title || "Training"}</div>
+                <div className="text-xs mt-1 truncate" style={{ color: T.muted }}>
+                  {whenLabel}{(lastWorkout.exercises || []).length ? ` · ${lastWorkout.exercises.map((e) => e.name).join(" + ")}` : ""}
+                </div>
+              </div>
+              <Btn variant="quiet" style={{ padding: "10px 14px" }} onClick={(e) => { e.stopPropagation(); repeatWorkout(lastWorkout); }}>↻ Nochmal</Btn>
+            </div>
+          </Card>
+        ) : (
+          <Card className="p-4 mb-4">
+            <div className="text-sm" style={{ color: T.text }}>Noch kein Training absolviert.</div>
+            <div className="text-xs mt-1" style={{ color: T.muted }}>Wähle unten eine Vorlage oder starte oben frei – jeder Anfang zählt.</div>
+          </Card>
+        )}
+
+        {missingGroups.length > 0 && (
           <>
-            <Eyebrow>Vorlagen</Eyebrow>
-            {templates.map((w) => {
-              const names = (w.exercises || []).map((e) => e.name);
+            <Eyebrow>Diese Woche noch offen</Eyebrow>
+            <div className="flex flex-wrap gap-2 mb-4">
+              {missingGroups.map((g) => (
+                <button key={g.category} onClick={() => startForCategory(g.category)}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-sm active:scale-95"
+                  style={{ background: T.panel2, border: `1px solid ${T.line}`, color: T.text }}>
+                  <span>{CAT_ICON[g.category]}</span> {g.category}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+
+        <Eyebrow>Vorlagen</Eyebrow>
+        {templates.map((t) => (
+          <Card key={t.title} className="p-4 mb-2" onClick={() => startWorkout({ title: t.title, exercises: t.exercises })}>
+            <div className="flex justify-between items-center gap-3">
+              <div style={{ minWidth: 0 }}>
+                <div className="rig-display text-base" style={{ color: T.text }}>{t.title}</div>
+                <div className="text-xs mt-1 truncate" style={{ color: T.muted }}>{t.hint}</div>
+              </div>
+              <span className="text-lg shrink-0" style={{ color: PLATE.yellow }}>▸</span>
+            </div>
+          </Card>
+        ))}
+
+        <Btn variant="ghost" className="w-full mt-2 mb-5" onClick={() => startWorkout()}>+ Neues Workout zusammenstellen</Btn>
+
+        {recentHistory.length > 0 && (
+          <>
+            <Eyebrow>Trainingshistorie</Eyebrow>
+            {recentHistory.map((w) => {
+              const cats = [...new Set((w.exercises || []).map((e) => e.category))];
               return (
-                <Card key={w.id} className="p-4 mb-2" onClick={() => repeatWorkout(w)}>
+                <Card key={w.id} className="p-3 mb-2" onClick={() => go("detail", w)}>
                   <div className="flex justify-between items-center gap-3">
                     <div style={{ minWidth: 0 }}>
-                      <div className="rig-display text-base" style={{ color: T.text }}>{w.title || "Training"}</div>
-                      <div className="text-xs mt-1 truncate" style={{ color: T.muted }}>
-                        {names.length ? names.join(" + ") : "keine Übungen"}
+                      <div className="text-sm truncate" style={{ color: T.text }}>{w.title || cats.join(" + ") || "Training"}</div>
+                      <div className="text-xs mt-0.5" style={{ color: T.muted }}>
+                        {relDay(w.startedAt)}{cats.length ? ` · ${cats.join(", ")}` : ""}
                       </div>
                     </div>
-                    <span className="text-lg shrink-0" style={{ color: PLATE.yellow }}>↻</span>
+                    <span className="text-xs rig-num shrink-0" style={{ color: T.muted }}>{nf(workoutTotals(w).reps)} Wdh.</span>
                   </div>
                 </Card>
               );
