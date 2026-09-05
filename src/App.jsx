@@ -832,7 +832,7 @@ const GENDERS = [
 const defaultSettings = () => ({
   theme: "dark", restDefault: 90, weeklyGoal: 4,
   privacy: { profilePublic: true, workoutsPublic: true, leaderboard: true, runsPublic: true },
-  weightKg: null, heightCm: null, experience: null, goals: [], goalWeightKg: null, goalNote: "",
+  weightKg: null, heightCm: null, experience: null, goals: [], goalWeightKg: null, goalDate: null, goalNote: "",
   avatarUrl: null, gender: null, birthDate: null,
 });
 
@@ -877,9 +877,16 @@ function BodyGoalsFields({ value, onChange }) {
         })}
       </div>
 
-      <Eyebrow>Zielgewicht (optional)</Eyebrow>
-      <div className="mb-5">
-        <NumberField value={v.goalWeightKg || 0} onChange={(n) => onChange({ goalWeightKg: n || null })} min={0} max={300} step={1} suffix="kg" width={88} />
+      <div className="grid grid-cols-2 gap-4 mb-5">
+        <div>
+          <Eyebrow>Zielgewicht (optional)</Eyebrow>
+          <NumberField value={v.goalWeightKg || 0} onChange={(n) => onChange({ goalWeightKg: n || null })} min={0} max={300} step={1} suffix="kg" width={88} />
+        </div>
+        <div>
+          <Eyebrow>Zieldatum (optional)</Eyebrow>
+          <input type="date" value={v.goalDate || ""} onChange={(e) => onChange({ goalDate: e.target.value || null })}
+            className="w-full px-3 py-3 rounded-xl text-sm" style={{ background: T.panel2, color: T.text, border: `1px solid ${T.line}` }} />
+        </div>
       </div>
 
       <Eyebrow>Was möchtest du erreichen?</Eyebrow>
@@ -3630,11 +3637,19 @@ function CommunityScreen({ ctx }) {
 /* --- Profil / Einstellungen --------------------------------------------- */
 function ProfileScreen({ ctx }) {
   const T = useT();
-  const { profile, patchProfile, workouts, runs, ropes, prs, streak, exportData, go, resetAll, startCall, cloudStatus, authEmail, signOut } = ctx;
+  const {
+    profile, patchProfile, workouts, runs, ropes, weightLog, prs, streak, exportData,
+    go, resetAll, startCall, cloudStatus, authEmail, signOut,
+  } = ctx;
   const agg = aggregate(workouts, runs, ropes);
   const [confirmReset, setConfirmReset] = useState(false);
   const [signOutBusy, setSignOutBusy] = useState(false);
   const [avatarBusy, setAvatarBusy] = useState(false);
+  const [showStatsDetail, setShowStatsDetail] = useState(false);
+  const [showVisibility, setShowVisibility] = useState(false);
+  const [showPersonal, setShowPersonal] = useState(false);
+  const [showAccount, setShowAccount] = useState(false);
+  const [editGoals, setEditGoals] = useState(false);
   const avatarFileRef = useRef(null);
   const statusLabel = { unconfigured: "Nicht angemeldet", ok: "Synchronisiert", error: "Sync-Fehler" }[cloudStatus] || "Nicht angemeldet";
   const statusColor = { unconfigured: T.muted, ok: PLATE.green, error: PLATE.red }[cloudStatus] || T.muted;
@@ -3677,146 +3692,242 @@ function ProfileScreen({ ctx }) {
     </div>
   );
 
+  /* Wochenring am Profilbild – dieselbe Rechnung wie auf der Home-Seite. */
+  const weekStart = Date.now() - 7 * DAY;
+  const thisWeekCount = workouts.filter((w) => w.startedAt >= weekStart).length;
+  const weeklyGoalVal = profile.weeklyGoal || 4;
+  const expLabel = EXPERIENCE_LEVELS.find((l) => l.value === profile.experience)?.label;
+
+  /* Gewichts-Fortschritt: echte Strecke seit dem ersten erfassten Gewicht bis zum
+     Ziel, nicht nur eine freie Zahl – nutzt den ohnehin vorhandenen Gewichtsverlauf. */
+  const sortedWeights = useMemo(() => [...(weightLog || [])].sort((a, b) => a.date - b.date), [weightLog]);
+  const startWeight = sortedWeights[0]?.weightKg ?? profile.weightKg;
+  const hasWeightGoal = profile.weightKg != null && profile.goalWeightKg != null;
+  const weightPct = hasWeightGoal && startWeight != null && startWeight !== profile.goalWeightKg
+    ? clamp((startWeight - profile.weightKg) / (startWeight - profile.goalWeightKg), 0, 1)
+    : 0;
+  const goalChipLabels = (profile.goals || []).map((g) => GOALS.find((x) => x.value === g)?.label).filter(Boolean);
+
   return (
     <div className="px-5 pt-6 pb-28 rig-fade">
-      <div className="text-center mb-6">
-        <div className="flex justify-center mb-3">
-          <div className="relative">
-            <Avatar url={profile.avatarUrl} emoji={profile.emoji} size={96} style={{ fontSize: 48 }} />
-            <button onClick={() => avatarFileRef.current?.click()} disabled={avatarBusy}
-              className="absolute flex items-center justify-center rounded-full"
-              style={{ right: -4, bottom: -4, width: 32, height: 32, background: PLATE.yellow, color: "#14161B", border: `2px solid ${T.bg}` }}>
-              {avatarBusy ? "…" : "📷"}
-            </button>
+      {/* --- Kopfbereich: Bild mit Wochenring, Name, Level, dabei-seit --- */}
+      <div className="flex items-center gap-4 mb-6">
+        <div className="relative shrink-0" style={{ width: 100, height: 100 }}>
+          <div className="absolute inset-0">
+            <ProgressRing value={thisWeekCount} max={weeklyGoalVal} size={100} stroke={4} color={PLATE.yellow} />
           </div>
+          <div className="absolute" style={{ top: 6, left: 6 }}>
+            <Avatar url={profile.avatarUrl} emoji={profile.emoji} size={88} style={{ fontSize: 42 }} />
+          </div>
+          <button onClick={() => avatarFileRef.current?.click()} disabled={avatarBusy}
+            className="absolute flex items-center justify-center rounded-full"
+            style={{ right: -2, bottom: -2, width: 28, height: 28, background: PLATE.yellow, color: "#14161B", border: `2px solid ${T.bg}`, fontSize: 12 }}>
+            {avatarBusy ? "…" : "✏️"}
+          </button>
+          <input ref={avatarFileRef} type="file" accept="image/*" hidden onChange={pickAvatar} />
         </div>
-        <input ref={avatarFileRef} type="file" accept="image/*" hidden onChange={pickAvatar} />
-        {profile.avatarUrl && (
-          <button onClick={removeAvatar} className="text-xs mb-2" style={{ color: T.muted }}>Foto entfernen</button>
-        )}
-        <div className="rig-display text-3xl" style={{ color: T.text }}>{profile.username}</div>
-        <div className="text-xs mt-1" style={{ color: T.muted }}>dabei seit {fmtDate(profile.createdAt)}</div>
+        <div style={{ minWidth: 0 }}>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="rig-display text-2xl truncate" style={{ color: T.text }}>{profile.username}</span>
+            {expLabel && (
+              <span className="text-[10px] rig-display px-2 py-1 rounded-full shrink-0" style={{ background: T.panel2, color: T.muted, letterSpacing: ".06em" }}>
+                {expLabel.toUpperCase()}
+              </span>
+            )}
+          </div>
+          <div className="text-xs mt-1" style={{ color: T.muted }}>seit {fmtDate(profile.createdAt)}</div>
+        </div>
       </div>
 
-      <div className="text-xs text-center mb-2" style={{ color: T.muted }}>
-        {profile.avatarUrl ? "Emoji-Fallback (falls du dein Foto entfernst):" : "Emoji, solange kein Foto gesetzt ist:"}
-      </div>
-      <div className="flex flex-wrap gap-2 justify-center mb-6">
-        {EMOJIS.map((e) => (
-          <button key={e} onClick={() => patchProfile({ emoji: e })} className="w-9 h-9 rounded-lg text-base"
-            style={{ background: profile.emoji === e ? PLATE.yellow : T.panel, border: `1px solid ${T.line}` }}>{e}</button>
-        ))}
-      </div>
-
-      <Card className="p-5 mb-4">
-        <div className="grid grid-cols-3 gap-4 mb-4">
+      {/* --- Statistik-Kacheln --- */}
+      <Card className="p-5 mb-2">
+        <div className="grid grid-cols-3 gap-4">
           <Stat label="Workouts" value={nf(agg.workouts)} />
           <Stat label="Wiederholungen" value={nf(agg.reps)} />
-          <Stat label="Serie" value={streak} unit="d" color={PLATE.yellow} />
-        </div>
-        <div className="grid grid-cols-3 gap-4 pt-4" style={{ borderTop: `1px solid ${T.line}` }}>
-          <Stat label="Laufen" value={nf(agg.km, 1)} unit="km" color={PLATE.blue} />
-          <Stat label="Sprünge" value={nf(agg.jumps)} color={PLATE.green} />
-          <Stat label="Rekorde" value={Object.keys(prs).length} color={PLATE.red} />
+          <Stat label="Tage Serie" value={streak} color={PLATE.yellow} />
         </div>
       </Card>
+      <button onClick={() => setShowStatsDetail((v) => !v)} className="w-full text-left text-xs mb-4 px-1" style={{ color: T.muted }}>
+        {Object.keys(prs).length} Rekorde, {nf(agg.km, 1)} km, {nf(agg.jumps)} Sprünge – {showStatsDetail ? "einklappen" : "alle anzeigen"} ›
+      </button>
+      {showStatsDetail && (
+        <Card className="p-4 mb-4">
+          <div className="grid grid-cols-3 gap-4">
+            <Stat label="Laufen" value={nf(agg.km, 1)} unit="km" color={PLATE.blue} />
+            <Stat label="Sprünge" value={nf(agg.jumps)} color={PLATE.green} />
+            <Stat label="Rekorde" value={Object.keys(prs).length} color={PLATE.red} />
+          </div>
+        </Card>
+      )}
 
+      {/* --- So sehen dich Freunde --- */}
+      <Card className="p-4 mb-4">
+        <div className="flex items-center justify-between mb-3">
+          <Eyebrow>👁 So sehen dich Freunde</Eyebrow>
+          <button onClick={() => setShowVisibility((v) => !v)} className="text-xs shrink-0" style={{ color: PLATE.yellow }}>
+            {showVisibility ? "fertig" : "anpassen"} ›
+          </button>
+        </div>
+        <div className="flex items-center gap-3 p-3 rounded-xl" style={{ background: T.panel2 }}>
+          <Avatar url={profile.avatarUrl} emoji={profile.emoji} size={34} />
+          <span className="flex-1 text-sm truncate" style={{ color: T.text }}>{profile.username}</span>
+          <span className="rig-num text-xs" style={{ color: PLATE.blue }}>{nf(agg.workouts)} Workout{agg.workouts === 1 ? "" : "s"} · {nf(agg.reps)} Wdh.</span>
+        </div>
+        {!profile.privacy.leaderboard && (
+          <div className="text-xs mt-2" style={{ color: T.muted }}>Aktuell ausgeblendet – du erscheinst in keiner Rangliste.</div>
+        )}
+        {showVisibility && (
+          <div className="mt-1">
+            <Toggle label="Profil öffentlich" hint="Freunde sehen deine Zahlen im Detail."
+              on={profile.privacy.profilePublic} set={(v) => patchProfile({ privacy: { ...profile.privacy, profilePublic: v } })} />
+            <Toggle label="Trainings öffentlich" hint="Zeigt deine Top-Übungen auf dem Profil."
+              on={profile.privacy.workoutsPublic} set={(v) => patchProfile({ privacy: { ...profile.privacy, workoutsPublic: v } })} />
+            <Toggle label="In der Rangliste auftauchen" hint="Aus heißt: dein Eintrag verschwindet komplett."
+              on={profile.privacy.leaderboard} set={(v) => patchProfile({ privacy: { ...profile.privacy, leaderboard: v } })} />
+            <Toggle label="Läufe öffentlich" hint="Kilometer bleiben sonst bei null."
+              on={profile.privacy.runsPublic} set={(v) => patchProfile({ privacy: { ...profile.privacy, runsPublic: v } })} />
+          </div>
+        )}
+      </Card>
+
+      {/* --- Trainingsziele --- */}
+      <Card className="p-4 mb-4" onClick={() => setEditGoals((v) => !v)}>
+        <div className="flex items-center justify-between mb-3">
+          <Eyebrow>Trainingsziele</Eyebrow>
+          <span className="text-xs" style={{ color: PLATE.yellow }}>{editGoals ? "fertig ›" : "bearbeiten ›"}</span>
+        </div>
+
+        {hasWeightGoal && (
+          <>
+            <div className="flex items-center gap-3 mb-1">
+              <span className="rig-num text-lg" style={{ color: T.text }}>{nf(profile.weightKg, 1)} kg</span>
+              <div className="flex-1 rounded-full overflow-hidden" style={{ height: 6, background: T.panel2 }}>
+                <div style={{ width: `${weightPct * 100}%`, height: 6, borderRadius: 4, background: PLATE.yellow, transition: "width .3s ease" }} />
+              </div>
+              <span className="rig-num text-lg" style={{ color: T.muted }}>{nf(profile.goalWeightKg, 1)} kg</span>
+            </div>
+          </>
+        )}
+        <div className="text-xs" style={{ color: T.muted }}>
+          {profile.goalDate ? `Ziel bis ${fmtDate(new Date(profile.goalDate + "T00:00:00").getTime())} · ` : ""}{weeklyGoalVal}× Training/Woche
+        </div>
+
+        {goalChipLabels.length > 0 && (
+          <div className="flex flex-wrap gap-2 mt-3">
+            {goalChipLabels.map((label) => (
+              <span key={label} className="px-3 py-1.5 rounded-lg text-xs" style={{ background: T.panel2, color: T.text }}>{label}</span>
+            ))}
+          </div>
+        )}
+
+        {editGoals && (
+          <div className="mt-4 pt-4" style={{ borderTop: `1px solid ${T.line}` }} onClick={(e) => e.stopPropagation()}>
+            <div className="mb-4">
+              <Eyebrow>Trainings pro Woche</Eyebrow>
+              <NumberField value={profile.weeklyGoal} onChange={(v) => patchProfile({ weeklyGoal: clamp(Math.round(v), 1, 14) })} min={1} max={14} width={70} />
+            </div>
+            <BodyGoalsFields value={profile} onChange={(patch) => patchProfile(patch)} />
+          </div>
+        )}
+      </Card>
+
+      {/* --- Account-Bereich: dezent, seltener genutzt --- */}
+      <Card className="p-0 mb-4 overflow-hidden">
+        <button onClick={() => setShowPersonal((v) => !v)} className="w-full flex items-center gap-3 p-4 text-left">
+          <span>👤</span>
+          <span className="flex-1 text-sm" style={{ color: T.text }}>Persönliche Angaben &amp; Darstellung</span>
+          <span className="text-xs" style={{ color: T.muted, display: "inline-block", transform: showPersonal ? "rotate(90deg)" : "none", transition: "transform .15s ease" }}>›</span>
+        </button>
+        {showPersonal && (
+          <div className="px-4 pb-4" style={{ borderTop: `1px solid ${T.line}` }}>
+            <div className="text-xs mt-3 mb-2" style={{ color: T.muted }}>Geschlecht</div>
+            <div className="flex flex-wrap gap-2 mb-4">
+              {GENDERS.map((g) => {
+                const on = profile.gender === g.value;
+                return (
+                  <button key={g.value} onClick={() => patchProfile({ gender: g.value })}
+                    className="px-3 py-2 rounded-lg text-sm active:scale-95"
+                    style={{ background: on ? PLATE.yellow : T.panel, color: on ? "#14161B" : T.text, border: `1px solid ${T.line}`, fontWeight: on ? 600 : 400 }}>
+                    {g.label}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="text-xs mb-2" style={{ color: T.muted }}>Geburtsdatum</div>
+            <input type="date" value={profile.birthDate || ""} onChange={(e) => patchProfile({ birthDate: e.target.value || null })}
+              className="w-full px-4 py-3 rounded-xl mb-4" style={{ background: T.panel2, color: T.text, border: `1px solid ${T.line}` }} />
+            <div className="text-xs mb-2" style={{ color: T.muted }}>Darstellung</div>
+            <div className="mb-4">
+              <Segmented value={profile.theme} onChange={(v) => patchProfile({ theme: v })}
+                options={[{ value: "dark", label: "Dunkel" }, { value: "light", label: "Hell" }]} />
+            </div>
+            <div className="text-xs mb-2" style={{ color: T.muted }}>
+              {profile.avatarUrl ? "Emoji-Fallback (falls du dein Foto entfernst)" : "Emoji, solange kein Foto gesetzt ist"}
+            </div>
+            <div className="flex flex-wrap gap-2 mb-2">
+              {EMOJIS.map((e) => (
+                <button key={e} onClick={() => patchProfile({ emoji: e })} className="w-9 h-9 rounded-lg text-base"
+                  style={{ background: profile.emoji === e ? PLATE.yellow : T.panel, border: `1px solid ${T.line}` }}>{e}</button>
+              ))}
+            </div>
+            {profile.avatarUrl && (
+              <button onClick={removeAvatar} className="text-xs" style={{ color: T.muted }}>Foto entfernen</button>
+            )}
+          </div>
+        )}
+
+        <button onClick={() => setShowAccount((v) => !v)} className="w-full flex items-center gap-3 p-4 text-left" style={{ borderTop: `1px solid ${T.line}` }}>
+          <span>⚙️</span>
+          <span className="flex-1 text-sm" style={{ color: T.text }}>Konto</span>
+          <span className="text-xs truncate" style={{ color: T.muted, maxWidth: 160 }}>{authEmail}</span>
+          <span className="text-xs shrink-0" style={{ color: T.muted, display: "inline-block", transform: showAccount ? "rotate(90deg)" : "none", transition: "transform .15s ease" }}>›</span>
+        </button>
+        {showAccount && (
+          <div className="px-4 pb-4" style={{ borderTop: `1px solid ${T.line}` }}>
+            <div className="flex items-center justify-between mt-3 mb-3">
+              <span className="text-xs" style={{ color: T.muted }}>Sync-Status</span>
+              <span className="text-xs rig-num px-2 py-1 rounded-full" style={{ background: T.panel2, color: statusColor }}>{statusLabel}</span>
+            </div>
+            <div className="text-xs mb-4" style={{ color: T.muted }}>
+              Angemeldet über Supabase Auth. Deine Daten synchronisieren automatisch und sind auf
+              jedem Gerät verfügbar, auf dem du dich mit dieser E-Mail-Adresse anmeldest.
+            </div>
+            <div className="flex gap-2 mb-2">
+              <Btn variant="ghost" className="flex-1" onClick={() => go("history")}>Historie</Btn>
+              <Btn variant="ghost" className="flex-1" onClick={exportData}>Daten exportieren</Btn>
+            </div>
+            <Btn variant="ghost" className="w-full" disabled={signOutBusy} onClick={doSignOut}>
+              {signOutBusy ? "Moment …" : "Abmelden"}
+            </Btn>
+          </div>
+        )}
+      </Card>
+
+      {/* --- Team-Call --- */}
       <Btn tone={PLATE.blue} className="w-full mb-4" onClick={() => startCall(roomForTeam(profile.username), "Team-Call · dein Raum")}>
         📹 Team-Call starten
       </Btn>
-      <div className="text-xs -mt-2 mb-4" style={{ color: T.muted }}>
+      <div className="text-xs -mt-2 mb-6" style={{ color: T.muted }}>
         Freunde erreichen deinen Raum über dein Profil in der Rangliste – „Team-Call beitreten".
       </div>
 
-      <Card className="p-4 mb-4">
-        <Eyebrow>Wochenziel</Eyebrow>
-        <div className="flex items-center gap-3">
-          <NumberField value={profile.weeklyGoal} onChange={(v) => patchProfile({ weeklyGoal: clamp(Math.round(v), 1, 14) })} min={1} max={14} width={70} />
-          <span className="text-sm" style={{ color: T.muted }}>Trainings pro Woche</span>
-        </div>
-      </Card>
-
-      <Card className="p-4 mb-4">
-        <Eyebrow>Körperdaten &amp; Ziele</Eyebrow>
-        <BodyGoalsFields value={profile} onChange={(patch) => patchProfile(patch)} />
-      </Card>
-
-      <Card className="p-4 mb-4">
-        <Eyebrow>Persönliche Angaben</Eyebrow>
-        <div className="text-xs mb-3" style={{ color: T.muted }}>Nur für dich sichtbar – erscheint nirgends sonst in der App.</div>
-        <div className="text-xs mb-2" style={{ color: T.muted }}>Geschlecht</div>
-        <div className="flex flex-wrap gap-2 mb-4">
-          {GENDERS.map((g) => {
-            const on = profile.gender === g.value;
-            return (
-              <button key={g.value} onClick={() => patchProfile({ gender: g.value })}
-                className="px-3 py-2 rounded-lg text-sm active:scale-95"
-                style={{ background: on ? PLATE.yellow : T.panel, color: on ? "#14161B" : T.text, border: `1px solid ${T.line}`, fontWeight: on ? 600 : 400 }}>
-                {g.label}
-              </button>
-            );
-          })}
-        </div>
-        <div>
-          <div className="text-xs mb-2" style={{ color: T.muted }}>Geburtsdatum</div>
-          <input type="date" value={profile.birthDate || ""} onChange={(e) => patchProfile({ birthDate: e.target.value || null })}
-            className="w-full px-4 py-3 rounded-xl" style={{ background: T.panel2, color: T.text, border: `1px solid ${T.line}` }} />
-        </div>
-      </Card>
-
-      <Card className="p-4 mb-4">
-        <Eyebrow>Darstellung</Eyebrow>
-        <Segmented value={profile.theme} onChange={(v) => patchProfile({ theme: v })}
-          options={[{ value: "dark", label: "Dunkel" }, { value: "light", label: "Hell" }]} />
-      </Card>
-
-      <Card className="px-4 pb-2 pt-4 mb-4">
-        <Eyebrow>Sichtbarkeit</Eyebrow>
-        <Toggle label="Profil öffentlich" hint="Freunde sehen deine Zahlen im Detail."
-          on={profile.privacy.profilePublic} set={(v) => patchProfile({ privacy: { ...profile.privacy, profilePublic: v } })} />
-        <Toggle label="Trainings öffentlich" hint="Zeigt deine Top-Übungen auf dem Profil."
-          on={profile.privacy.workoutsPublic} set={(v) => patchProfile({ privacy: { ...profile.privacy, workoutsPublic: v } })} />
-        <Toggle label="In der Rangliste auftauchen" hint="Aus heißt: dein Eintrag verschwindet komplett."
-          on={profile.privacy.leaderboard} set={(v) => patchProfile({ privacy: { ...profile.privacy, leaderboard: v } })} />
-        <Toggle label="Läufe öffentlich" hint="Kilometer bleiben sonst bei null."
-          on={profile.privacy.runsPublic} set={(v) => patchProfile({ privacy: { ...profile.privacy, runsPublic: v } })} />
-      </Card>
-
-      <Card className="p-4 mb-4">
-        <div className="flex items-center justify-between mb-3">
-          <Eyebrow>Konto</Eyebrow>
-          <span className="text-xs rig-num px-2 py-1 rounded-full" style={{ background: T.panel2, color: statusColor }}>{statusLabel}</span>
-        </div>
-        <div className="text-sm mb-3" style={{ color: T.text }}>{authEmail}</div>
-        <div className="text-xs mb-4" style={{ color: T.muted }}>
-          Angemeldet über Supabase Auth. Deine Daten synchronisieren automatisch und sind auf
-          jedem Gerät verfügbar, auf dem du dich mit dieser E-Mail-Adresse anmeldest.
-        </div>
-        <Btn variant="ghost" className="w-full" disabled={signOutBusy} onClick={doSignOut}>
-          {signOutBusy ? "Moment …" : "Abmelden"}
-        </Btn>
-      </Card>
-
-      <div className="flex gap-2 mb-3">
-        <Btn variant="ghost" className="flex-1" onClick={() => go("history")}>Historie</Btn>
-        <Btn variant="ghost" className="flex-1" onClick={exportData}>Daten exportieren</Btn>
+      {/* --- Fußbereich --- */}
+      <div className="pt-4 text-center" style={{ borderTop: `1px solid ${T.line}` }}>
+        <div className="text-xs" style={{ color: T.muted }}>Rig Daily · MVP</div>
+        {confirmReset ? (
+          <Card className="p-4 mt-3 text-left" style={{ borderColor: PLATE.red }}>
+            <div className="text-sm mb-3" style={{ color: T.text }}>
+              Das löscht alle Trainings, Läufe, Sprünge und Rekorde auf diesem Gerät. Rückgängig geht nicht.
+            </div>
+            <div className="flex gap-2">
+              <Btn variant="ghost" className="flex-1" onClick={() => setConfirmReset(false)}>Abbrechen</Btn>
+              <Btn variant="danger" className="flex-1" onClick={resetAll}>Alles löschen</Btn>
+            </div>
+          </Card>
+        ) : (
+          <button onClick={() => setConfirmReset(true)} className="text-xs mt-2" style={{ color: T.muted }}>Alle Daten löschen</button>
+        )}
       </div>
-
-      {confirmReset ? (
-        <Card className="p-4" style={{ borderColor: PLATE.red }}>
-          <div className="text-sm mb-3" style={{ color: T.text }}>
-            Das löscht alle Trainings, Läufe, Sprünge und Rekorde auf diesem Gerät. Rückgängig geht nicht.
-          </div>
-          <div className="flex gap-2">
-            <Btn variant="ghost" className="flex-1" onClick={() => setConfirmReset(false)}>Abbrechen</Btn>
-            <Btn variant="danger" className="flex-1" onClick={resetAll}>Alles löschen</Btn>
-          </div>
-        </Card>
-      ) : (
-        <Btn variant="danger" className="w-full" onClick={() => setConfirmReset(true)}>Alle Daten löschen</Btn>
-      )}
-
-      <div className="text-xs text-center mt-6" style={{ color: T.muted }}>Rig Daily · MVP</div>
     </div>
   );
 }
