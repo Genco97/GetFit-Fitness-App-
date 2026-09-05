@@ -173,6 +173,155 @@ function resizeImageFile(file, maxW = 640, quality = 0.6) {
   });
 }
 
+/* Text auf maxLines Zeilen umbrechen (Wortgrenzen), letzte Zeile bei Bedarf
+   mit "…" kürzen – für die Story-Karte, wo Nutzer-Titel beliebig lang sein können. */
+function wrapCanvasText(ctx, text, maxWidth, maxLines = 2) {
+  const words = text.split(" ");
+  const lines = [];
+  let line = "";
+  for (const word of words) {
+    const test = line ? `${line} ${word}` : word;
+    if (ctx.measureText(test).width <= maxWidth || !line) {
+      line = test;
+    } else {
+      lines.push(line);
+      line = word;
+      if (lines.length === maxLines) { line = ""; break; }
+    }
+  }
+  if (line) lines.push(line);
+  if (lines.length > maxLines) lines.length = maxLines;
+  let last = lines[lines.length - 1];
+  if (last) {
+    while (ctx.measureText(last).width > maxWidth && last.length > 1) last = last.slice(0, -1);
+    lines[lines.length - 1] = last;
+  }
+  return lines;
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+/* Workout als Story-Karte (1080×1920, Instagram-Story-Format) direkt auf einem
+   <canvas> gezeichnet statt per DOM-Screenshot – dadurch unabhängig von
+   Browser-Eigenheiten beim Rendern von Verläufen/Web-Fonts. */
+async function drawWorkoutStoryCard(workout, username) {
+  const W = 1080, H = 1920, pad = 90;
+  const canvas = document.createElement("canvas");
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext("2d");
+  const yellow = "#F2C230", textCol = "#EFEDE7", mutedCol = "#878D9C", lineCol = "#2B303C";
+
+  try {
+    await Promise.all([
+      document.fonts.load('700 34px "Barlow Condensed"'), document.fonts.load('700 108px "Barlow Condensed"'),
+      document.fonts.load('700 140px "Barlow Condensed"'), document.fonts.load('500 36px "Inter"'),
+      document.fonts.load('600 30px "Inter"'), document.fonts.load('500 32px "Inter"'),
+    ]);
+    await document.fonts.ready;
+  } catch { /* Web Fonts noch nicht bereit – Canvas fällt auf System-Font zurück */ }
+
+  const bgGrad = ctx.createLinearGradient(0, 0, 0, H);
+  bgGrad.addColorStop(0, "#191C24");
+  bgGrad.addColorStop(1, "#101218");
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textBaseline = "alphabetic";
+  ctx.fillStyle = yellow;
+  ctx.font = '700 34px "Barlow Condensed", "Arial Narrow", sans-serif';
+  ctx.fillText("RIG DAILY", pad, 150);
+
+  ctx.fillStyle = textCol;
+  ctx.font = '700 108px "Barlow Condensed", "Arial Narrow", sans-serif';
+  const titleLines = wrapCanvasText(ctx, (workout.title || "Training").toUpperCase(), W - pad * 2, 2);
+  let ty = 320;
+  titleLines.forEach((line) => { ctx.fillText(line, pad, ty); ty += 110; });
+
+  ctx.fillStyle = mutedCol;
+  ctx.font = '500 36px "Inter", system-ui, sans-serif';
+  ctx.fillText(`${fmtDate(workout.startedAt)} · ${fmtMin(workout.durationSec)}`, pad, ty + 20);
+
+  const tot = workoutTotals(workout);
+  const stats = [
+    { label: "WIEDERHOLUNGEN", value: nf(tot.reps) },
+    { label: "SÄTZE", value: nf(tot.sets) },
+    { label: "VOLUMEN", value: `${nf(tot.volume)} kg` },
+  ];
+  let sy = ty + 140;
+  stats.forEach((s, i) => {
+    if (i > 0) {
+      ctx.strokeStyle = lineCol; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(pad, sy); ctx.lineTo(W - pad, sy); ctx.stroke();
+      sy += 60;
+    }
+    ctx.fillStyle = mutedCol;
+    ctx.font = '600 30px "Inter", system-ui, sans-serif';
+    ctx.fillText(s.label, pad, sy);
+    ctx.fillStyle = yellow;
+    ctx.font = '700 140px "Barlow Condensed", "Arial Narrow", sans-serif';
+    ctx.fillText(s.value, pad, sy + 140);
+    sy += 170;
+  });
+
+  const cats = [...new Set((workout.exercises || []).map((e) => e.category))];
+  if (cats.length) {
+    ctx.font = '500 32px "Inter", system-ui, sans-serif';
+    let cx = pad, chipY = sy + 30;
+    cats.forEach((c) => {
+      const label = `${CAT_ICON[c] || ""} ${c}`;
+      const w = ctx.measureText(label).width + 48;
+      if (cx + w > W - pad) return; // eine Zeile reicht für die Story-Karte
+      ctx.fillStyle = "#212530";
+      roundRect(ctx, cx, chipY, w, 64, 32);
+      ctx.fill();
+      ctx.fillStyle = textCol;
+      ctx.fillText(label, cx + 24, chipY + 42);
+      cx += w + 18;
+    });
+  }
+
+  ctx.fillStyle = mutedCol;
+  ctx.font = '500 32px "Inter", system-ui, sans-serif';
+  ctx.textAlign = "center";
+  ctx.fillText(`${username} · Rig Daily`, W / 2, H - 90);
+  ctx.textAlign = "left";
+
+  ctx.fillStyle = yellow;
+  ctx.fillRect(0, H - 14, W, 14);
+
+  return new Promise((resolve) => canvas.toBlob((blob) => resolve(blob), "image/png"));
+}
+
+/* Erzeugt die Story-Karte und teilt sie nativ (Instagram, WhatsApp, …), falls
+   der Browser das kann – sonst lädt sie als PNG herunter. */
+async function shareWorkoutStory(workout, username, toast) {
+  try {
+    const blob = await drawWorkoutStoryCard(workout, username);
+    if (!blob) throw new Error("no-blob");
+    const file = new File([blob], "rig-daily-workout.png", { type: "image/png" });
+    if (navigator.share && (!navigator.canShare || navigator.canShare({ files: [file] }))) {
+      await navigator.share({ files: [file], title: "Rig Daily" });
+      return;
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "rig-daily-workout.png";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    toast({ msg: "Bild gespeichert." });
+  } catch (err) {
+    if (err?.name !== "AbortError") toast({ kind: "error", msg: "Bild ließ sich nicht erstellen." });
+  }
+}
+
 /* ------------------------------------------------------- 3 ÜBUNGSDATENBANK */
 /* type: "reps" = Körpergewicht (nur Wdh.), "weight" = Wdh. + kg, "time" = Sekunden */
 const CATS = ["Brust", "Rücken", "Beine", "Schultern", "Arme", "Bauch", "Ganzkörper"];
@@ -2766,8 +2915,14 @@ function HistoryScreen({ ctx }) {
 
 function WorkoutDetail({ ctx, workout }) {
   const T = useT();
-  const { go, deleteWorkout, repeatWorkout } = ctx;
+  const { go, deleteWorkout, repeatWorkout, profile, toast } = ctx;
   const tot = workoutTotals(workout);
+  const [sharing, setSharing] = useState(false);
+  const doShare = async () => {
+    setSharing(true);
+    await shareWorkoutStory(workout, profile.username, toast);
+    setSharing(false);
+  };
   return (
     <div className="px-5 pt-6 pb-28 rig-fade">
       <button onClick={() => go("history")} className="text-xs px-3 py-2 rounded-lg mb-4" style={{ background: T.panel2, color: T.muted }}>Zurück</button>
@@ -2806,6 +2961,7 @@ function WorkoutDetail({ ctx, workout }) {
       })}
 
       <div className="flex gap-2 mt-4">
+        <Btn variant="quiet" disabled={sharing} onClick={doShare}>{sharing ? "…" : "🖼️ Story"}</Btn>
         <Btn variant="ghost" className="flex-1" onClick={() => repeatWorkout(workout)}>Nochmal trainieren</Btn>
         <Btn variant="danger" onClick={() => { deleteWorkout(workout.id); go("history"); }}>Löschen</Btn>
       </div>
