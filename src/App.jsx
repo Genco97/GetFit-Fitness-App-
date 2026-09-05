@@ -171,6 +171,7 @@ function resizeImageFile(file, maxW = 640, quality = 0.6) {
 /* ------------------------------------------------------- 3 ÜBUNGSDATENBANK */
 /* type: "reps" = Körpergewicht (nur Wdh.), "weight" = Wdh. + kg, "time" = Sekunden */
 const CATS = ["Brust", "Rücken", "Beine", "Schultern", "Arme", "Bauch", "Ganzkörper"];
+const CAT_ICON = { Brust: "🎽", Rücken: "🧗", Beine: "🦵", Schultern: "🙆", Arme: "💪", Bauch: "🔥", Ganzkörper: "⚡" };
 const BASE_EX = [
   ["Liegestütze", "Brust", "reps"], ["Bankdrücken", "Brust", "weight"], ["Dips", "Brust", "reps"],
   ["Breite Liegestütze", "Brust", "reps"], ["Kurzhantel-Fliegende", "Brust", "weight"],
@@ -1041,6 +1042,22 @@ function Home({ ctx }) {
   const goal = profile.weeklyGoal || 4;
   const topPR = Object.entries(prs).sort((a, b) => (b[1].maxReps || 0) - (a[1].maxReps || 0)).slice(0, 3);
 
+  /* Muskelgruppen: pro Kategorie Sätze diese Woche + wann zuletzt überhaupt trainiert,
+     damit man auf einen Blick sieht, was diese Woche noch fehlt. */
+  const muscleGroups = useMemo(() => {
+    const lastTrained = {}, setsThisWeek = {};
+    CATS.forEach((c) => { lastTrained[c] = null; setsThisWeek[c] = 0; });
+    for (const w of workouts) {
+      for (const ex of w.exercises || []) {
+        const cat = ex.category;
+        if (!(cat in lastTrained)) continue;
+        if (!lastTrained[cat] || w.startedAt > lastTrained[cat]) lastTrained[cat] = w.startedAt;
+        if (w.startedAt >= weekStart) setsThisWeek[cat] += (ex.sets || []).length;
+      }
+    }
+    return CATS.map((c) => ({ category: c, trained: setsThisWeek[c] > 0, sets: setsThisWeek[c], lastTrained: lastTrained[c] }));
+  }, [workouts, weekStart]);
+
   /* 14-Tage-Streifen: ein Strich pro aktivem Tag, per Streak-Schutz überbrückte Tage extra markiert */
   const strip = Array.from({ length: 14 }, (_, i) => {
     const ts = Date.now() - (13 - i) * DAY;
@@ -1108,6 +1125,29 @@ function Home({ ctx }) {
         </div>
         <div className="flex justify-between text-xs mt-2" style={{ color: T.muted }}>
           <span>vor 14 Tagen</span><span>heute</span>
+        </div>
+      </Card>
+
+      {/* Muskelgruppen diese Woche */}
+      <Card className="p-4 mb-4">
+        <Eyebrow>Muskelgruppen diese Woche</Eyebrow>
+        <div className="grid grid-cols-4 gap-2">
+          {muscleGroups.map((g) => {
+            const daysAgo = g.lastTrained ? Math.floor((Date.now() - g.lastTrained) / DAY) : null;
+            return (
+              <div key={g.category} className="rounded-xl p-2 text-center" style={g.trained
+                ? { background: `linear-gradient(160deg, ${T.panel}, ${PLATE.green}1f)`, border: `1px solid ${PLATE.green}55` }
+                : { background: T.panel2, border: `1px solid ${T.line}` }}>
+                <div className="text-lg mb-0.5" style={{ opacity: g.trained ? 1 : 0.5 }}>{CAT_ICON[g.category]}</div>
+                <div className="text-[10px] truncate" style={{ color: g.trained ? T.text : T.muted, fontWeight: g.trained ? 600 : 400 }}>
+                  {g.category}
+                </div>
+                <div className="text-[9px] mt-0.5" style={{ color: g.trained ? PLATE.green : T.muted }}>
+                  {g.trained ? `${g.sets} Sätze` : daysAgo == null ? "noch nie" : daysAgo === 0 ? "heute" : `vor ${daysAgo}d`}
+                </div>
+              </div>
+            );
+          })}
         </div>
       </Card>
 
