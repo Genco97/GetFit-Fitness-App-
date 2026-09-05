@@ -1284,7 +1284,7 @@ function WorkoutRow({ w, onClick }) {
 /* --- Aktives Workout ---------------------------------------------------- */
 function WorkoutScreen({ ctx }) {
   const T = useT();
-  const { active, setActive, finishWorkout, discardWorkout, exercises, addCustomExercise, profile, toast, startWorkout, workouts } = ctx;
+  const { active, setActive, finishWorkout, discardWorkout, exercises, addCustomExercise, profile, toast, startWorkout, repeatWorkout, workouts } = ctx;
   const [pickerOpen, setPickerOpen] = useState(false);
   const [rest, setRest] = useState(null); // {left, total}
   const [tick, setTick] = useState(0);
@@ -1314,11 +1314,43 @@ function WorkoutScreen({ ctx }) {
   }, [rest, toast]);
 
   if (!active) {
+    /* Vorlagen für den Schnellstart: letzte Workouts, nach Titel/Übungen entdoppelt –
+       antippen füllt ein neues Training mit denselben Übungen (wie bei Hevy & Co). */
+    const templates = [];
+    const seen = new Set();
+    for (const w of workouts) {
+      const key = w.title || (w.exercises || []).map((e) => e.name).join("+");
+      if (seen.has(key)) continue;
+      seen.add(key);
+      templates.push(w);
+      if (templates.length >= 4) break;
+    }
     return (
       <div className="px-5 pt-6 pb-28 rig-fade">
         <div className="rig-display text-3xl mb-6" style={{ color: T.text }}>Workout</div>
         <Empty title="Kein Training aktiv" hint="Die Uhr steht erst, wenn du im Workout auf Start drückst."
           action={<Btn onClick={startWorkout}>Workout starten</Btn>} />
+        {templates.length > 0 && (
+          <>
+            <Eyebrow>Vorlagen</Eyebrow>
+            {templates.map((w) => {
+              const names = (w.exercises || []).map((e) => e.name);
+              return (
+                <Card key={w.id} className="p-4 mb-2" onClick={() => repeatWorkout(w)}>
+                  <div className="flex justify-between items-center gap-3">
+                    <div style={{ minWidth: 0 }}>
+                      <div className="rig-display text-base" style={{ color: T.text }}>{w.title || "Training"}</div>
+                      <div className="text-xs mt-1 truncate" style={{ color: T.muted }}>
+                        {names.length ? names.join(" + ") : "keine Übungen"}
+                      </div>
+                    </div>
+                    <span className="text-lg shrink-0" style={{ color: PLATE.yellow }}>↻</span>
+                  </div>
+                </Card>
+              );
+            })}
+          </>
+        )}
       </div>
     );
   }
