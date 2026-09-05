@@ -2358,7 +2358,7 @@ function StatsScreen({ ctx }) {
       const d = new Date(k + "T00:00:00");
       return bucket === "day" ? `${d.getDate()}.${d.getMonth() + 1}.` : `KW ${d.getDate()}.${d.getMonth() + 1}.`;
     };
-    const touch = (k) => { if (!map.has(k)) map.set(k, { k, label: labelOf(k), workouts: 0, reps: 0, minutes: 0, volume: 0, km: 0, jumps: 0 }); return map.get(k); };
+    const touch = (k) => { if (!map.has(k)) map.set(k, { k, label: labelOf(k), workouts: 0, reps: 0, minutes: 0, volume: 0, km: 0, jumps: 0, filtered: 0 }); return map.get(k); };
 
     /* leere Buckets anlegen, damit Lücken sichtbar bleiben */
     const span = period || Math.max(30, Math.ceil((Date.now() - Math.min(
@@ -2383,6 +2383,19 @@ function StatsScreen({ ctx }) {
   const m = METRICS.find((x) => x.value === metric);
   const exNames = Object.keys(agg.perExercise).sort((a, b) => agg.perExercise[b] - agg.perExercise[a]);
   const chartKey = exFilter ? "filtered" : metric;
+
+  /* Wdh. zuletzt / seit Start für eine einzelne gefilterte Übung – unabhängig vom
+     gewählten Zeitraum, damit "seit Start" wirklich den allerersten erfassten Wert meint. */
+  const exStats = useMemo(() => {
+    if (!exFilter) return null;
+    const entries = workouts
+      .filter((w) => (w.exercises || []).some((e) => e.name === exFilter))
+      .map((w) => ({ date: w.startedAt, reps: w.exercises.find((e) => e.name === exFilter).sets.reduce((a, s) => a + (s.reps || 0), 0) }))
+      .sort((a, b) => a.date - b.date);
+    if (!entries.length) return null;
+    const first = entries[0], last = entries[entries.length - 1];
+    return { last: last.reps, delta: last.reps - first.reps };
+  }, [workouts, exFilter]);
 
   return (
     <div className="px-5 pt-6 pb-28 rig-fade">
@@ -2417,7 +2430,40 @@ function StatsScreen({ ctx }) {
         <Eyebrow color={exFilter ? PLATE.yellow : m.color}>
           {exFilter ? `${exFilter} – Wiederholungen` : m.label}
         </Eyebrow>
-        <div style={{ height: 200 }}>
+
+        {metric === "reps" && exNames.length > 0 && (
+          <div className="mt-2 mb-1 flex gap-2 overflow-x-auto rig-scroll">
+            <button onClick={() => setExFilter("")}
+              className="text-xs px-3 py-2 rounded-lg whitespace-nowrap shrink-0"
+              style={{ background: !exFilter ? PLATE.yellow : T.panel, color: !exFilter ? "#14161B" : T.muted, border: `1px solid ${T.line}` }}>
+              Alle
+            </button>
+            {exNames.map((n) => (
+              <button key={n} onClick={() => setExFilter(exFilter === n ? "" : n)}
+                className="text-xs px-3 py-2 rounded-lg whitespace-nowrap shrink-0"
+                style={{ background: exFilter === n ? PLATE.yellow : T.panel, color: exFilter === n ? "#14161B" : T.muted, border: `1px solid ${T.line}` }}>
+                {n}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {exFilter && exStats && (
+          <div className="flex gap-5 mt-3 mb-1">
+            <div>
+              <div className="text-[10px]" style={{ color: T.muted }}>Wdh. zuletzt</div>
+              <div className="rig-num text-lg" style={{ color: T.text }}>{nf(exStats.last)}</div>
+            </div>
+            <div>
+              <div className="text-[10px]" style={{ color: T.muted }}>seit Start</div>
+              <div className="rig-num text-lg" style={{ color: exStats.delta > 0 ? PLATE.green : exStats.delta < 0 ? PLATE.red : T.muted }}>
+                {exStats.delta > 0 ? "+" : ""}{nf(exStats.delta)}
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div style={{ height: 200 }} className="mt-2">
           <ResponsiveContainer width="100%" height="100%">
             <AreaChart data={data} margin={{ top: 4, right: 4, left: -22, bottom: 0 }}>
               <defs>
@@ -2454,7 +2500,7 @@ function StatsScreen({ ctx }) {
               const max = agg.perExercise[exNames[0]] || 1;
               const on = exFilter === name;
               return (
-                <button key={name} onClick={() => setExFilter(on ? "" : name)}
+                <button key={name} onClick={() => { if (on) { setExFilter(""); } else { setMetric("reps"); setExFilter(name); } }}
                   className="w-full text-left py-2" style={{ borderTop: i ? `1px solid ${T.line}` : "none" }}>
                   <div className="flex justify-between text-sm mb-1">
                     <span style={{ color: on ? PLATE.yellow : T.text }}>{name}</span>
