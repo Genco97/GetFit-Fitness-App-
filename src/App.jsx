@@ -637,7 +637,7 @@ function detectPRs(prev, workout) {
 /* Meilensteine – rein aus der bestehenden Trainingshistorie abgeleitet
    (keine eigenen Zähler), einmal freigeschaltet bleiben sie in
    achievementsUnlocked für immer erhalten, auch nach "Alle Daten löschen". */
-const ACHIEVEMENTS = [
+const BASE_ACHIEVEMENTS = [
   { id: "w1", icon: "🥇", title: "Erster Schritt", hint: "1 Workout absolviert", check: (s) => s.workouts >= 1 },
   { id: "w10", icon: "💪", title: "Dabeigeblieben", hint: "10 Workouts absolviert", check: (s) => s.workouts >= 10 },
   { id: "w50", icon: "🏋️", title: "Stammgast", hint: "50 Workouts absolviert", check: (s) => s.workouts >= 50 },
@@ -656,6 +656,60 @@ const ACHIEVEMENTS = [
   { id: "pr10", icon: "🌟", title: "Rekordjäger", hint: "10 persönliche Rekorde", check: (s) => s.prCount >= 10 },
   { id: "reps10000", icon: "🔢", title: "Zehntausend", hint: "10.000 Wiederholungen insgesamt", check: (s) => s.totalReps >= 10000 },
 ];
+
+/* Calisthenics-Abzeichen: aus einer kompakten Tabelle erzeugt statt einzeln
+   ausgeschrieben – bei ~90 Einträgen sonst viel zu fehleranfällig beim Pflegen.
+   "Bestwert" = meiste Wdh./Sekunden in einem einzelnen Satz (aus prs), "insgesamt"
+   = Summe aller je geloggten Wdh. dieser Übung über die ganze Historie. */
+const slugId = (s) => s.toLowerCase().replace(/[^a-z]/g, "");
+const CALISTHENICS_REPS = [
+  { name: "Liegestütze", cat: "Brust", setTiers: [15, 30, 50], totalTiers: [1000, 5000] },
+  { name: "Breite Liegestütze", cat: "Brust", setTiers: [10, 20, 35], totalTiers: [500, 2000] },
+  { name: "Dips", cat: "Brust", setTiers: [8, 15, 25], totalTiers: [500, 2000] },
+  { name: "Trizeps-Dips", cat: "Arme", setTiers: [10, 20, 30], totalTiers: [500, 2000] },
+  { name: "Klimmzüge", cat: "Rücken", setTiers: [3, 8, 15], totalTiers: [250, 1000] },
+  { name: "Chin-ups", cat: "Rücken", setTiers: [3, 8, 15], totalTiers: [250, 1000] },
+  { name: "Australian Pull-ups", cat: "Rücken", setTiers: [10, 20, 35], totalTiers: [500, 2000] },
+  { name: "Pistol Squats", cat: "Beine", setTiers: [1, 3, 6], totalTiers: [100, 400] },
+  { name: "Pike Push-ups", cat: "Schultern", setTiers: [5, 12, 20], totalTiers: [250, 1000] },
+  { name: "Sit-ups", cat: "Bauch", setTiers: [20, 40, 75], totalTiers: [1000, 5000] },
+  { name: "Crunches", cat: "Bauch", setTiers: [20, 40, 75], totalTiers: [1000, 5000] },
+  { name: "Leg Raises", cat: "Bauch", setTiers: [10, 20, 35], totalTiers: [500, 2000] },
+  { name: "Burpees", cat: "Ganzkörper", setTiers: [10, 20, 40], totalTiers: [500, 2000] },
+  { name: "Mountain Climbers", cat: "Ganzkörper", setTiers: [30, 60, 100], totalTiers: [1000, 5000] },
+  { name: "Jumping Jacks", cat: "Ganzkörper", setTiers: [30, 60, 100], totalTiers: [1000, 5000] },
+];
+const CALISTHENICS_HOLDS = [
+  { name: "Plank", cat: "Bauch", holdTiers: [20, 45, 90, 180] },
+  { name: "Hollow Hold", cat: "Bauch", holdTiers: [15, 30, 60, 120] },
+];
+const CALISTHENICS_ACHIEVEMENTS = [
+  ...CALISTHENICS_REPS.flatMap((e) => [
+    ...e.setTiers.map((n) => ({
+      id: `set_${slugId(e.name)}_${n}`, icon: CAT_ICON[e.cat],
+      title: `${n} ${e.name} am Stück`, hint: `${n} Wiederholungen ${e.name} in einem Satz`,
+      check: (s) => (s.prs[e.name]?.maxReps || 0) >= n,
+    })),
+    ...e.totalTiers.map((n) => ({
+      id: `total_${slugId(e.name)}_${n}`, icon: CAT_ICON[e.cat],
+      title: `${nf(n)} ${e.name} insgesamt`, hint: `${nf(n)} Wiederholungen ${e.name} insgesamt geloggt`,
+      check: (s) => (s.exerciseTotals[e.name] || 0) >= n,
+    })),
+  ]),
+  ...CALISTHENICS_HOLDS.flatMap((e) => e.holdTiers.map((sec) => ({
+    id: `hold_${slugId(e.name)}_${sec}`, icon: CAT_ICON[e.cat],
+    title: `${fmtClock(sec)} ${e.name}`, hint: `${e.name} ${sec} Sekunden am Stück gehalten`,
+    check: (s) => (s.prs[e.name]?.maxHold || 0) >= sec,
+  }))),
+];
+
+const ACHIEVEMENTS = [...BASE_ACHIEVEMENTS, ...CALISTHENICS_ACHIEVEMENTS];
+/* Abschluss-Trophäe: erscheint als letztes Abzeichen der Liste und schaltet
+   sich frei, sobald jedes andere Abzeichen bereits freigeschaltet ist. */
+ACHIEVEMENTS.push({
+  id: "all_badges", icon: "👑", title: "Alle Abzeichen", hint: "Jedes andere Abzeichen freigeschaltet",
+  check: (s) => s.unlockedCount >= ACHIEVEMENTS.length - 1,
+});
 
 function buildBoardEntry(profile, workouts, runs, ropes, frozenDays) {
   const a = aggregate(workouts, runs, ropes);
@@ -4422,13 +4476,24 @@ function AppInner() {
      schaltet neu erreichte Meilensteine frei und zeigt sie kurz an. */
   const achievementStats = useMemo(() => {
     const agg = aggregate(workouts, runs, ropes);
+    /* Summe aller je geloggten Wdh. pro Übungsname – Basis für die
+       "insgesamt"-Abzeichen der Calisthenics-Übungen. */
+    const exerciseTotals = {};
+    for (const w of workouts) {
+      for (const ex of w.exercises || []) {
+        if (ex.type === "time") continue;
+        const sum = (ex.sets || []).reduce((a, s) => a + (s.reps || 0), 0);
+        exerciseTotals[ex.name] = (exerciseTotals[ex.name] || 0) + sum;
+      }
+    }
     return {
       workouts: workouts.length, runsCount: runs.length,
       streak,
       totalKm: agg.km, maxRunKm: runs.reduce((m, r) => Math.max(m, r.distanceKm || 0), 0),
       totalJumps: agg.jumps, totalReps: agg.reps, prCount: Object.keys(prs).length,
+      prs, exerciseTotals, unlockedCount: Object.keys(achievementsUnlocked).length,
     };
-  }, [workouts, runs, ropes, prs, streak]);
+  }, [workouts, runs, ropes, prs, streak, achievementsUnlocked]);
 
   useEffect(() => {
     if (!ready || !profile) return;
