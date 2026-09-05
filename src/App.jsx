@@ -3972,6 +3972,92 @@ function MyQrCodeSheet({ open, onClose, username }) {
   );
 }
 
+/* Kleiner Baustein für Impressum/Datenschutz: Überschrift + Fließtext,
+   damit beide Sheets nicht jede Zeile einzeln stylen müssen. */
+function LegalSection({ title, children }) {
+  const T = useT();
+  return (
+    <div className="mb-4">
+      {title && <div className="text-sm font-semibold mb-1" style={{ color: T.text }}>{title}</div>}
+      <div className="text-xs leading-relaxed" style={{ color: T.muted }}>{children}</div>
+    </div>
+  );
+}
+
+/* Enthält noch Platzhalter ([...]) – die Betreiber tragen Name/Adresse/
+   Kontakt-E-Mail selbst nach, das kann/soll niemand für sie erfinden. */
+function ImpressumSheet({ open, onClose }) {
+  const T = useT();
+  return (
+    <Sheet open={open} onClose={onClose} title="Impressum">
+      <LegalSection title="Angaben gemäß § 5 ECG">
+        [Name Person 1]<br />
+        [Name Person 2]<br /><br />
+        [Straße Hausnummer]<br />
+        [PLZ Ort], Österreich
+      </LegalSection>
+      <LegalSection title="Kontakt">
+        E-Mail: [gemeinsame-email@...]
+      </LegalSection>
+      <LegalSection>
+        Diese App wird als privates, nicht-kommerzielles Projekt zu zweit betrieben.
+      </LegalSection>
+      <LegalSection title="Streitschlichtung">
+        Die Europäische Kommission stellt eine Plattform zur Online-Streitbeilegung (OS) bereit:{" "}
+        <span style={{ color: T.text }}>ec.europa.eu/consumers/odr</span>. Wir sind nicht verpflichtet und nicht
+        bereit, an einem Streitbeilegungsverfahren vor einer Verbraucherschlichtungsstelle teilzunehmen.
+      </LegalSection>
+    </Sheet>
+  );
+}
+
+function DatenschutzSheet({ open, onClose }) {
+  const T = useT();
+  return (
+    <Sheet open={open} onClose={onClose} title="Datenschutzerklärung" full>
+      <LegalSection title="1. Verantwortliche">
+        [Name Person 1], [Name Person 2]<br />
+        [Adresse]<br />
+        E-Mail: [gemeinsame-email@...]<br /><br />
+        Wir betreiben diese App gemeinsam und sind daher gemeinsam Verantwortliche im Sinne von Art. 26 DSGVO.
+        Für Anfragen zu deinen Daten wende dich an obige E-Mail-Adresse, wir kümmern uns gemeinsam darum.
+      </LegalSection>
+      <LegalSection title="2. Welche Daten wir verarbeiten">
+        <b style={{ color: T.text }}>Registrierung:</b> E-Mail-Adresse und Passwort (über unseren Auth-Anbieter Supabase, Passwort verschlüsselt gespeichert)<br /><br />
+        <b style={{ color: T.text }}>Profildaten:</b> Benutzername, Profilbild/Emoji, Geschlecht, Geburtsdatum, Körpergröße/-gewicht, Trainingsziele – jeweils freiwillige Angaben<br /><br />
+        <b style={{ color: T.text }}>Trainingsdaten:</b> geloggte Workouts, Sätze, Wiederholungen, Gewichte, Seilspringen<br /><br />
+        <b style={{ color: T.text }}>Standortdaten:</b> Beim Aufzeichnen eines Laufs erfassen wir mit deiner Erlaubnis fortlaufend deinen GPS-Standort, um die Laufstrecke darzustellen. Diese Daten bleiben in deinem Konto und werden nicht an andere Nutzer weitergegeben.<br /><br />
+        <b style={{ color: T.text }}>Fortschrittsfotos:</b> von dir freiwillig hochgeladene Fotos, ausschließlich in deinem eigenen Konto sichtbar<br /><br />
+        <b style={{ color: T.text }}>Community-Daten:</b> Falls du die Sichtbarkeits-Einstellungen aktivierst, werden Benutzername und aggregierte Trainingsstatistiken (nicht: GPS-Rohdaten oder Fotos) für Rangliste und Freunde sichtbar<br /><br />
+        <b style={{ color: T.text }}>Video-Calls:</b> Bei Nutzung der Team-Call-Funktion wird eine Verbindung zum Drittanbieter Jitsi (meet.jit.si, Betreiber: 8x8, Inc., USA) aufgebaut; dabei werden IP-Adresse und Anzeigename an diesen Dienst übermittelt<br /><br />
+        <b style={{ color: T.text }}>Technisch notwendige Cookies/Speicher:</b> Session-Cookies zur Anmeldung (Supabase Auth) sowie lokaler Browser-Speicher (localStorage), damit die App auch offline funktioniert<br /><br />
+        <b style={{ color: T.text }}>Server-Logs:</b> Unser Hosting-Anbieter Vercel verarbeitet beim Aufruf der App automatisch IP-Adresse, Zeitpunkt und Browsertyp in Server-Logfiles (Standard-Hosting-Protokollierung)
+      </LegalSection>
+      <LegalSection title="3. Zweck und Rechtsgrundlage">
+        Bereitstellung der App-Funktionen: Art. 6 Abs. 1 lit. b DSGVO (Vertragserfüllung)<br /><br />
+        Standortdaten, Fotos, Video-Calls: Art. 6 Abs. 1 lit. a DSGVO (Einwilligung), jederzeit widerrufbar
+      </LegalSection>
+      <LegalSection title="4. Empfänger / Auftragsverarbeiter">
+        <b style={{ color: T.text }}>Supabase</b> – Datenbank &amp; Authentifizierung, Serverstandort Frankfurt/EU (eu-central-1)<br /><br />
+        <b style={{ color: T.text }}>Vercel Inc.</b> – Hosting der Web-App (USA-Unternehmen; Übermittlung ggf. auf Basis des EU-US Data Privacy Framework / Standardvertragsklauseln)<br /><br />
+        <b style={{ color: T.text }}>8x8, Inc. (Jitsi)</b> – nur bei aktiver Nutzung der Video-Call-Funktion
+      </LegalSection>
+      <LegalSection title="5. Speicherdauer">
+        Deine Daten bleiben gespeichert, solange dein Konto besteht. Über "Alle Daten löschen" in den
+        Profileinstellungen kannst du sie jederzeit selbst unwiderruflich entfernen.
+      </LegalSection>
+      <LegalSection title="6. Deine Rechte">
+        Du hast das Recht auf Auskunft, Berichtigung, Löschung, Einschränkung der Verarbeitung,
+        Datenübertragbarkeit und Widerspruch (Art. 15–21 DSGVO). Kontakt: [gemeinsame-email@...].
+        Beschwerderecht bei der österreichischen Datenschutzbehörde (dsb.gv.at).
+      </LegalSection>
+      <LegalSection title="7. Keine Weitergabe zu Werbezwecken">
+        Deine Daten werden nicht verkauft oder zu Werbezwecken an Dritte weitergegeben.
+      </LegalSection>
+    </Sheet>
+  );
+}
+
 /* --- Profil / Einstellungen --------------------------------------------- */
 function ProfileScreen({ ctx }) {
   const T = useT();
@@ -3988,6 +4074,8 @@ function ProfileScreen({ ctx }) {
   const [showPersonal, setShowPersonal] = useState(false);
   const [showAccount, setShowAccount] = useState(false);
   const [showQr, setShowQr] = useState(false);
+  const [showImpressum, setShowImpressum] = useState(false);
+  const [showDatenschutz, setShowDatenschutz] = useState(false);
   const [editGoals, setEditGoals] = useState(false);
   const avatarFileRef = useRef(null);
   const statusLabel = { unconfigured: "Nicht angemeldet", ok: "Synchronisiert", error: "Sync-Fehler" }[cloudStatus] || "Nicht angemeldet";
@@ -4259,6 +4347,11 @@ function ProfileScreen({ ctx }) {
       {/* --- Fußbereich --- */}
       <div className="pt-4 text-center" style={{ borderTop: `1px solid ${T.line}` }}>
         <div className="text-xs" style={{ color: T.muted }}>STRADAA · MVP</div>
+        <div className="flex items-center justify-center gap-2 mt-2">
+          <button onClick={() => setShowImpressum(true)} className="text-xs" style={{ color: T.muted }}>Impressum</button>
+          <span className="text-xs" style={{ color: T.muted }}>·</span>
+          <button onClick={() => setShowDatenschutz(true)} className="text-xs" style={{ color: T.muted }}>Datenschutz</button>
+        </div>
         {confirmReset ? (
           <Card className="p-4 mt-3 text-left" style={{ borderColor: PLATE.red }}>
             <div className="text-sm mb-3" style={{ color: T.text }}>
@@ -4275,6 +4368,8 @@ function ProfileScreen({ ctx }) {
       </div>
 
       <MyQrCodeSheet open={showQr} onClose={() => setShowQr(false)} username={profile.username} />
+      <ImpressumSheet open={showImpressum} onClose={() => setShowImpressum(false)} />
+      <DatenschutzSheet open={showDatenschutz} onClose={() => setShowDatenschutz(false)} />
     </div>
   );
 }
