@@ -391,6 +391,8 @@ const K = {
   notif: (u) => `notif:${u}`,
   chat: (a, b) => `chat:${[a, b].sort().join("~")}`,
   feed: (u) => `feed:${u}`,
+  challenge: (id) => `challenge:${id}`,
+  challengeList: (u) => `challenges:${u}`,
 };
 
 /* Legt eine Benachrichtigung im (geteilten) Postfach eines anderen Nutzers ab –
@@ -432,6 +434,29 @@ function aggregate(workouts, runs, ropes) {
   for (const r of runs) { t.km += r.distanceKm || 0; t.runSec += r.durationSec || 0; }
   for (const j of ropes) { t.jumps += j.totalJumps || 0; t.ropeSec += j.durationSec || 0; }
   return { ...t, perExercise };
+}
+
+const CHALLENGE_METRICS = [
+  { value: "workouts", label: "Workouts", unit: "" },
+  { value: "reps", label: "Wiederholungen", unit: "" },
+  { value: "minutes", label: "Trainingszeit", unit: "min" },
+  { value: "km", label: "Laufen", unit: "km" },
+  { value: "jumps", label: "Seilspringen", unit: "" },
+];
+
+/* Eigener Wert für eine Challenge – nur im Zeitraum [start, end), damit es egal
+   ist, wann beide Seiten annehmen oder zuletzt synchronisiert haben. */
+function computeMetricInRange(workouts, runs, ropes, metric, start, end) {
+  const fw = workouts.filter((w) => w.startedAt >= start && w.startedAt < end);
+  const fr = runs.filter((r) => r.date >= start && r.date < end);
+  const fj = ropes.filter((r) => r.date >= start && r.date < end);
+  const agg = aggregate(fw, fr, fj);
+  if (metric === "workouts") return agg.workouts;
+  if (metric === "reps") return agg.reps;
+  if (metric === "minutes") return Math.round(agg.seconds / 60);
+  if (metric === "km") return Number(agg.km.toFixed(2));
+  if (metric === "jumps") return agg.jumps;
+  return 0;
 }
 
 function activeDays(workouts, runs, ropes) {
@@ -2637,7 +2662,7 @@ function FriendProfile({ entry, isFriend, onAdd, me }) {
 }
 
 /* --- Community: Feed, Freunde, Chat, Benachrichtigungen ----------------- */
-const NOTIF_ICON = { friend_request: "🤝", friend_accept: "✅", chat: "💬" };
+const NOTIF_ICON = { friend_request: "🤝", friend_accept: "✅", chat: "💬", challenge: "⚔️" };
 
 function ChatSheet({ open, onClose, friend, me, ctx }) {
   const T = useT();
@@ -2713,6 +2738,120 @@ function NotificationsSheet({ open, onClose, notifications }) {
           </div>
         </Card>
       ))}
+    </Sheet>
+  );
+}
+
+function ChallengeCard({ challenge, me, onAccept, onDecline }) {
+  const T = useT();
+  const m = CHALLENGE_METRICS.find((x) => x.value === challenge.metric) || CHALLENGE_METRICS[0];
+  const opponent = challenge.createdBy === me ? challenge.opponent : challenge.createdBy;
+  const decimals = m.value === "km" ? 1 : 0;
+
+  if (challenge.status === "pending" && challenge.opponent === me) {
+    return (
+      <Card className="p-4 mb-3" style={{ border: `1px solid ${PLATE.yellow}55`, background: `linear-gradient(135deg, ${T.panel}, ${PLATE.yellow}14)` }}>
+        <div className="flex items-center gap-2 mb-3">
+          <span className="text-lg">⚔️</span>
+          <div className="text-sm flex-1" style={{ color: T.text }}>
+            <span style={{ fontWeight: 600 }}>{challenge.createdBy}</span> fordert dich heraus: {m.label} diese Woche
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <Btn className="flex-1" onClick={() => onAccept(challenge.id)}>Annehmen</Btn>
+          <Btn variant="ghost" className="flex-1" onClick={() => onDecline(challenge.id)}>Ablehnen</Btn>
+        </div>
+      </Card>
+    );
+  }
+  if (challenge.status === "pending") {
+    return (
+      <Card className="p-4 mb-3" style={{ opacity: 0.7 }}>
+        <div className="text-sm" style={{ color: T.text }}>⚔️ Challenge an <span style={{ fontWeight: 600 }}>{challenge.opponent}</span> · {m.label}</div>
+        <div className="text-xs mt-1" style={{ color: T.muted }}>Warte auf Antwort …</div>
+      </Card>
+    );
+  }
+  if (challenge.status === "declined") {
+    return (
+      <Card className="p-4 mb-3" style={{ opacity: 0.6 }}>
+        <div className="text-sm" style={{ color: T.text }}>⚔️ {opponent} · {m.label}</div>
+        <div className="text-xs mt-1" style={{ color: PLATE.red }}>Abgelehnt</div>
+      </Card>
+    );
+  }
+
+  const myVal = challenge.values[me] || 0;
+  const oppVal = challenge.values[opponent] || 0;
+  const total = Math.max(myVal, oppVal, 1);
+  const finished = Date.now() >= challenge.endsAt;
+  const daysLeft = Math.max(0, Math.ceil((challenge.endsAt - Date.now()) / DAY));
+  const iAmWinning = myVal > oppVal;
+
+  return (
+    <Card className="p-4 mb-3" style={finished ? { border: `1px solid ${PLATE.yellow}55`, background: `linear-gradient(135deg, ${T.panel}, ${PLATE.yellow}14)` } : undefined}>
+      <div className="flex items-center justify-between mb-1">
+        <div className="text-sm" style={{ color: T.text, fontWeight: 600 }}>Du vs. {opponent}</div>
+        <div className="text-xs" style={{ color: T.muted }}>{finished ? "beendet" : `noch ${daysLeft} Tag${daysLeft === 1 ? "" : "e"}`}</div>
+      </div>
+      <div className="text-xs mb-3" style={{ color: T.muted }}>{m.label}</div>
+      <div className="flex items-center gap-2 mb-1.5">
+        <span className="rig-num text-sm w-14 shrink-0" style={{ color: PLATE.yellow }}>{nf(myVal, decimals)}</span>
+        <div className="flex-1 rounded-full overflow-hidden" style={{ height: 8, background: T.panel2 }}>
+          <div style={{ width: `${(myVal / total) * 100}%`, height: 8, borderRadius: 4, background: PLATE.yellow }} />
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <span className="rig-num text-sm w-14 shrink-0" style={{ color: T.muted }}>{nf(oppVal, decimals)}</span>
+        <div className="flex-1 rounded-full overflow-hidden" style={{ height: 8, background: T.panel2 }}>
+          <div style={{ width: `${(oppVal / total) * 100}%`, height: 8, borderRadius: 4, background: T.muted }} />
+        </div>
+      </div>
+      {finished && (
+        <div className="text-xs mt-3 text-center rig-num" style={{ color: myVal === oppVal ? T.muted : iAmWinning ? PLATE.green : PLATE.red }}>
+          {myVal === oppVal ? "Unentschieden" : iAmWinning ? "🏆 Gewonnen!" : "Verloren"}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function NewChallengeSheet({ open, onClose, friends, presetFriend, onCreate }) {
+  const T = useT();
+  const [friend, setFriend] = useState("");
+  const [metric, setMetric] = useState("workouts");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (open) { setFriend(presetFriend || friends[0] || ""); setMetric("workouts"); }
+  }, [open, presetFriend, friends]);
+
+  const submit = async () => {
+    if (!friend) return;
+    setBusy(true);
+    await onCreate(friend, metric);
+    setBusy(false);
+    onClose();
+  };
+
+  return (
+    <Sheet open={open} onClose={onClose} title="Challenge starten">
+      <Eyebrow>Gegen wen?</Eyebrow>
+      <div className="flex gap-2 flex-wrap mb-5">
+        {friends.map((f) => (
+          <button key={f} onClick={() => setFriend(f)} className="px-3 py-2 rounded-lg text-sm"
+            style={{ background: friend === f ? PLATE.yellow : T.panel2, color: friend === f ? "#14161B" : T.text }}>
+            {f}
+          </button>
+        ))}
+        {friends.length === 0 && <div className="text-xs" style={{ color: T.muted }}>Du hast noch keine Freunde.</div>}
+      </div>
+      <Eyebrow>Worum geht's?</Eyebrow>
+      <div className="mb-5">
+        <Segmented value={metric} onChange={setMetric} options={CHALLENGE_METRICS} />
+      </div>
+      <div className="text-xs mb-4" style={{ color: T.muted }}>Läuft 7 Tage, sobald {friend || "dein Freund"} annimmt.</div>
+      <Btn className="w-full" disabled={!friend || busy} onClick={submit}>Challenge senden</Btn>
     </Sheet>
   );
 }
@@ -2796,6 +2935,7 @@ function CommunityScreen({ ctx }) {
     profile, board, social, sendRequest, acceptRequest, declineRequest, removeFriend,
     feed, refreshFeed, addPost, toggleLike, deletePost,
     notifications, refreshNotifications, markNotificationsRead, refreshBoard,
+    challenges, refreshChallenges, startChallenge, respondChallenge,
   } = ctx;
   const [view, setView] = useState("feed");
   const [feedScope, setFeedScope] = useState("freunde");
@@ -2804,11 +2944,14 @@ function CommunityScreen({ ctx }) {
   const [openFriend, setOpenFriend] = useState(null);
   const [chatFriend, setChatFriend] = useState(null);
   const [notifOpen, setNotifOpen] = useState(false);
+  const [newChallengeOpen, setNewChallengeOpen] = useState(false);
+  const [challengeFriend, setChallengeFriend] = useState(null);
 
-  useEffect(() => { refreshBoard(); refreshFeed(); refreshNotifications(); }, [refreshBoard, refreshFeed, refreshNotifications]);
+  useEffect(() => { refreshBoard(); refreshFeed(); refreshNotifications(); refreshChallenges(); }, [refreshBoard, refreshFeed, refreshNotifications, refreshChallenges]);
 
   const friends = social.friends || [];
   const unread = notifications.filter((n) => !n.read).length;
+  const pendingChallenges = challenges.filter((c) => c.status === "pending" && c.opponent === profile.username).length;
 
   const doSearch = async () => {
     const t = q.trim().toLowerCase();
@@ -2840,7 +2983,11 @@ function CommunityScreen({ ctx }) {
 
       <div className="mb-5">
         <Segmented value={view} onChange={setView}
-          options={[{ value: "feed", label: "Feed" }, { value: "friends", label: `Freunde (${friends.length})` }]} />
+          options={[
+            { value: "feed", label: "Feed" },
+            { value: "friends", label: `Freunde (${friends.length})` },
+            { value: "challenges", label: `Challenges${pendingChallenges > 0 ? ` (${pendingChallenges})` : ""}` },
+          ]} />
       </div>
 
       {view === "feed" && (
@@ -2919,13 +3066,32 @@ function CommunityScreen({ ctx }) {
                     {u}
                   </button>
                   <button onClick={() => setChatFriend(u)} className={iconBtn} style={{ background: T.panel2, color: PLATE.yellow, transition: "transform .12s ease" }}>💬</button>
-                  <button onClick={() => ctx.startCall(roomFor1v1(profile.username, u), `1:1 · du & ${u}`)}
-                    className={iconBtn} style={{ background: T.panel2, color: PLATE.blue, transition: "transform .12s ease" }}>📹</button>
+                  <button onClick={() => { setChallengeFriend(u); setNewChallengeOpen(true); }}
+                    className={iconBtn} style={{ background: T.panel2, color: T.text, transition: "transform .12s ease" }}>⚔️</button>
                   <button onClick={() => removeFriend(u)} className={iconBtn} style={{ background: T.panel2, color: PLATE.red, transition: "transform .12s ease" }}>✕</button>
                 </div>
               </Card>
             );
           })}
+        </>
+      )}
+
+      {view === "challenges" && (
+        <>
+          <Btn className="w-full mb-4" disabled={friends.length === 0}
+            onClick={() => { setChallengeFriend(null); setNewChallengeOpen(true); }}>⚔️ Challenge starten</Btn>
+          {challenges.length === 0 && (
+            <Empty title="Noch keine Challenges" hint="Fordere einen Freund heraus – wer schafft diese Woche mehr?" />
+          )}
+          {[...challenges].sort((a, b) => {
+            const rank = (c) => (c.status === "pending" && c.opponent === profile.username) ? 0
+              : (c.status === "active" && Date.now() < c.endsAt) ? 1
+                : c.status === "pending" ? 2 : 3;
+            return rank(a) - rank(b);
+          }).map((c) => (
+            <ChallengeCard key={c.id} challenge={c} me={profile.username}
+              onAccept={(id) => respondChallenge(id, true)} onDecline={(id) => respondChallenge(id, false)} />
+          ))}
         </>
       )}
 
@@ -2936,6 +3102,8 @@ function CommunityScreen({ ctx }) {
 
       <ChatSheet open={!!chatFriend} onClose={() => setChatFriend(null)} friend={chatFriend} me={profile.username} ctx={ctx} />
       <NotificationsSheet open={notifOpen} onClose={() => setNotifOpen(false)} notifications={notifications} />
+      <NewChallengeSheet open={newChallengeOpen} onClose={() => setNewChallengeOpen(false)}
+        friends={friends} presetFriend={challengeFriend} onCreate={startChallenge} />
     </div>
   );
 }
@@ -3235,6 +3403,7 @@ function AppInner() {
   const [social, setSocial] = useState({ friends: [], requests: [] });
   const [notifications, setNotifications] = useState([]);
   const [feed, setFeed] = useState([]);
+  const [challenges, setChallenges] = useState([]);
   const [tab, setTab] = useState("home");
   const [detail, setDetail] = useState(null);
   const [toastMsg, setToastMsg] = useState(null);
@@ -3723,6 +3892,61 @@ function AppInner() {
     setFeed(all.slice(0, 100));
   }, []);
 
+  /* --- Challenges: 1:1-Duell mit einem Freund über 7 Tage --- */
+  const startChallenge = async (friend, metric) => {
+    if (!profile) return;
+    const id = uid();
+    const now = Date.now();
+    const doc = {
+      id, metric, createdBy: profile.username, opponent: friend, createdAt: now, endsAt: now + 7 * DAY,
+      status: "pending", values: { [profile.username]: 0, [friend]: 0 },
+    };
+    await S.set(K.challenge(id), doc, true);
+    const mine = (await S.get(K.challengeList(profile.username), true)) || [];
+    await S.set(K.challengeList(profile.username), [id, ...mine], true);
+    const theirs = (await S.get(K.challengeList(friend), true)) || [];
+    await S.set(K.challengeList(friend), [id, ...theirs], true);
+    const m = CHALLENGE_METRICS.find((x) => x.value === metric);
+    await pushNotification(friend, { type: "challenge", from: profile.username, text: `${profile.username} fordert dich heraus: ${m.label} diese Woche!` });
+    toast({ msg: `Challenge an ${friend} ist raus.` });
+    await refreshChallenges();
+  };
+
+  const respondChallenge = async (id, accept) => {
+    const doc = await S.get(K.challenge(id), true);
+    if (!doc) return;
+    doc.status = accept ? "active" : "declined";
+    await S.set(K.challenge(id), doc, true);
+    if (accept) {
+      await pushNotification(doc.createdBy, { type: "challenge", from: profile.username, text: `${profile.username} hat deine Challenge angenommen!` });
+      toast({ msg: "Challenge angenommen." });
+    } else {
+      toast({ msg: "Challenge abgelehnt." });
+    }
+    await refreshChallenges();
+  };
+
+  const refreshChallenges = useCallback(async () => {
+    if (!profile) return;
+    const ids = (await S.get(K.challengeList(profile.username), true)) || [];
+    const docs = [];
+    for (const id of ids.slice(0, 50)) {
+      const doc = await S.get(K.challenge(id), true);
+      if (!doc) continue;
+      if (doc.status === "active") {
+        const end = Math.min(Date.now(), doc.endsAt);
+        const myVal = computeMetricInRange(workouts, runs, ropes, doc.metric, doc.createdAt, end);
+        if (doc.values[profile.username] !== myVal) {
+          doc.values = { ...doc.values, [profile.username]: myVal };
+          await S.set(K.challenge(id), doc, true);
+        }
+      }
+      docs.push(doc);
+    }
+    docs.sort((a, b) => b.createdAt - a.createdAt);
+    setChallenges(docs);
+  }, [profile, workouts, runs, ropes]);
+
   /* --- Export / Reset --- */
   const exportData = () => {
     try {
@@ -3763,6 +3987,7 @@ function AppInner() {
     refreshBoard, sendRequest, acceptRequest, declineRequest, removeFriend, exportData, resetAll,
     notifications, refreshNotifications, markNotificationsRead, sendMessage, loadChat,
     feed, refreshFeed, addPost, deletePost, toggleLike,
+    challenges, refreshChallenges, startChallenge, respondChallenge,
     startCall, cloudStatus: cloudStatusState, authEmail, signOut,
   };
 
