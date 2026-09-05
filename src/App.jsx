@@ -47,9 +47,14 @@ const FONT_CSS = `
   font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
 .rig-scroll::-webkit-scrollbar { display: none; }
 .rig-scroll { scrollbar-width: none; }
-.rig-fade { animation: rigFade .22s ease-out both; }
+/* Kein "both"/"forwards": ein am Ende gehaltenes transform: none wird vom Browser
+   weiter als Matrix (nicht das Keyword "none") berechnet und macht das Element
+   ungewollt zum Containing Block für fixed-positionierte Kinder (z.B. Sheet) –
+   das reißt jedes Sheet auf einer höheren Seite ans Ende des ganzen Inhalts statt
+   an den Viewport-Rand. Ohne Fill-Mode fällt transform danach sauber auf "none" zurück. */
+.rig-fade { animation: rigFade .22s ease-out; }
 @keyframes rigFade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-.rig-sheet { animation: rigUp .26s cubic-bezier(.2,.8,.25,1) both; }
+.rig-sheet { animation: rigUp .26s cubic-bezier(.2,.8,.25,1); }
 @keyframes rigUp { from { transform: translateY(24px); opacity: .4 } to { transform: none; opacity: 1 } }
 .rig-pulse { animation: rigPulse 1.6s ease-in-out infinite; }
 @keyframes rigPulse { 0%,100% { opacity: 1 } 50% { opacity: .55 } }
@@ -2080,10 +2085,12 @@ const HEAT_PERIODS = [
 
 /* Aktivitäts-Kalender wie bei GitHub/Strava: eine Spalte pro Woche, ein
    Kästchen pro Tag, dunkler = mehr an dem Tag gemacht. Eigener Zeitraum-Filter,
-   unabhängig vom Zeitraum-Filter weiter unten auf der Seite. */
-function ActivityHeatmap({ workouts, runs, ropes }) {
+   unabhängig vom Zeitraum-Filter weiter unten auf der Seite. Jedes Kästchen ist
+   antippbar und zeigt, was an dem Tag trainiert wurde. */
+function ActivityHeatmap({ workouts, runs, ropes, streak }) {
   const T = useT();
   const [period, setPeriod] = useState(30);
+  const [detail, setDetail] = useState(null); // { key, ts }
   const weeks = Math.ceil(period / 7);
   const counts = useMemo(() => {
     const m = new Map();
@@ -2100,7 +2107,7 @@ function ActivityHeatmap({ workouts, runs, ropes }) {
     const cells = [];
     for (let i = days - 1; i >= 0; i--) {
       const ts = today.getTime() - i * DAY;
-      cells.push({ ts, count: counts.get(dayKey(ts)) || 0 });
+      cells.push({ ts, key: dayKey(ts), count: counts.get(dayKey(ts)) || 0 });
     }
     const padStart = (new Date(cells[0].ts).getDay() + 6) % 7; // Montag = 0
     const padded = [...Array(padStart).fill(null), ...cells];
@@ -2111,14 +2118,29 @@ function ActivityHeatmap({ workouts, runs, ropes }) {
 
   const opacityFor = (n) => (n <= 0 ? 0 : n === 1 ? 0.4 : n === 2 ? 0.7 : 1);
 
+  const dayItems = useMemo(() => {
+    if (!detail) return null;
+    return {
+      w: workouts.filter((x) => dayKey(x.startedAt) === detail.key),
+      r: runs.filter((x) => dayKey(x.date) === detail.key),
+      j: ropes.filter((x) => dayKey(x.date) === detail.key),
+    };
+  }, [detail, workouts, runs, ropes]);
+
   return (
     <>
+      {streak > 0 && (
+        <div className="text-sm mb-3">
+          🔥 <span className="rig-num" style={{ color: PLATE.yellow, fontWeight: 600 }}>{streak}</span>{" "}
+          <span style={{ color: T.muted }}>{streak === 1 ? "Tag" : "Tage"} in Folge</span>
+        </div>
+      )}
       <div className="mb-3"><Segmented value={period} onChange={setPeriod} options={HEAT_PERIODS} /></div>
       <div className="flex gap-1 overflow-x-auto rig-scroll pb-1">
         {grid.map((col, i) => (
           <div key={i} className="flex flex-col gap-1">
             {col.map((cell, j) => (
-              <div key={j} style={{
+              <button key={j} disabled={!cell} onClick={() => cell && setDetail(cell)} style={{
                 width: 11, height: 11, borderRadius: 3,
                 background: cell && cell.count > 0 ? PLATE.yellow : T.panel2,
                 opacity: cell ? (cell.count > 0 ? opacityFor(cell.count) : 1) : 0,
@@ -2127,6 +2149,37 @@ function ActivityHeatmap({ workouts, runs, ropes }) {
           </div>
         ))}
       </div>
+
+      <Sheet open={!!detail} onClose={() => setDetail(null)}
+        title={detail ? `${DE_DAY[new Date(detail.ts).getDay()]}, ${fmtDate(detail.ts)}` : ""}>
+        {dayItems && dayItems.w.length + dayItems.r.length + dayItems.j.length === 0 ? (
+          <div className="text-sm text-center py-6" style={{ color: T.muted }}>Kein Training an diesem Tag.</div>
+        ) : dayItems && (
+          <div className="flex flex-col gap-2">
+            {dayItems.w.map((w) => {
+              const t = workoutTotals(w);
+              return (
+                <div key={w.id} className="p-3 rounded-xl" style={{ background: T.panel2 }}>
+                  <div className="text-sm" style={{ color: T.text }}>{w.title || "Training"}</div>
+                  <div className="text-xs mt-1 rig-num" style={{ color: T.muted }}>{nf(t.reps)} Wdh. · {fmtMin(w.durationSec)}</div>
+                </div>
+              );
+            })}
+            {dayItems.r.map((r) => (
+              <div key={r.id} className="p-3 rounded-xl" style={{ background: T.panel2 }}>
+                <div className="text-sm" style={{ color: T.text }}>🏃 Lauf</div>
+                <div className="text-xs mt-1 rig-num" style={{ color: T.muted }}>{nf(r.distanceKm, 2)} km · {fmtMin(r.durationSec)}</div>
+              </div>
+            ))}
+            {dayItems.j.map((r) => (
+              <div key={r.id} className="p-3 rounded-xl" style={{ background: T.panel2 }}>
+                <div className="text-sm" style={{ color: T.text }}>🪢 Seilspringen</div>
+                <div className="text-xs mt-1 rig-num" style={{ color: T.muted }}>{nf(r.totalJumps)} Sprünge · {fmtMin(r.durationSec)}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Sheet>
     </>
   );
 }
@@ -2326,7 +2379,7 @@ function ProgressPhotosSection({ ctx }) {
 
 function StatsScreen({ ctx }) {
   const T = useT();
-  const { workouts, runs, ropes, prs, achievementsUnlocked, go } = ctx;
+  const { workouts, runs, ropes, prs, achievementsUnlocked, streak, go } = ctx;
   const [period, setPeriod] = useState(30);
   const [metric, setMetric] = useState("reps");
   const [exFilter, setExFilter] = useState("");
@@ -2413,7 +2466,7 @@ function StatsScreen({ ctx }) {
 
       <Card className="p-4 mb-4">
         <Eyebrow>Aktivität</Eyebrow>
-        <ActivityHeatmap workouts={workouts} runs={runs} ropes={ropes} />
+        <ActivityHeatmap workouts={workouts} runs={runs} ropes={ropes} streak={streak} />
       </Card>
 
       <div className="mb-4"><Segmented value={period} onChange={setPeriod} options={PERIODS} /></div>
