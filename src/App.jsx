@@ -1419,6 +1419,30 @@ function WorkoutScreen({ ctx }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [rest, setRest] = useState(null); // {left, total}
   const [tick, setTick] = useState(0);
+  const [groupMode, setGroupMode] = useState(false);
+  const [groupSelection, setGroupSelection] = useState([]);
+
+  /* Übungen zu Anzeige-Blöcken zusammenfassen: gruppierte Übungen bleiben in
+     ihrer Reihenfolge, werden aber als ein Block gerendert.
+     Muss vor jedem Early-Return stehen, sonst wechselt die Hook-Anzahl
+     zwischen Startseite (active=null) und laufendem Workout (React #300). */
+  const renderItems = useMemo(() => {
+    if (!active) return [];
+    const seen = new Set();
+    const items = [];
+    for (const ex of active.exercises) {
+      if (seen.has(ex.key)) continue;
+      if (ex.group) {
+        const mates = active.exercises.filter((e) => e.group === ex.group);
+        mates.forEach((m) => seen.add(m.key));
+        items.push({ type: "group", group: ex.group, exercises: mates });
+      } else {
+        seen.add(ex.key);
+        items.push({ type: "single", ex });
+      }
+    }
+    return items;
+  }, [active]);
 
   /* Letzte vergangene Session mit dieser Übung – als Referenz fürs progressive Steigern.
      `workouts` ist neueste zuerst, ein einfacher Vorwärtslauf reicht also. */
@@ -1598,8 +1622,6 @@ function WorkoutScreen({ ctx }) {
     return a;
   });
 
-  const [groupMode, setGroupMode] = useState(false);
-  const [groupSelection, setGroupSelection] = useState([]);
   const toggleGroupSelect = (key) => setGroupSelection((sel) => (sel.includes(key) ? sel.filter((k) => k !== key) : [...sel, key]));
   const cancelGroupMode = () => { setGroupSelection([]); setGroupMode(false); };
   const confirmGroup = () => {
@@ -1612,25 +1634,6 @@ function WorkoutScreen({ ctx }) {
     setGroupSelection([]); setGroupMode(false);
   };
   const ungroup = (gid) => patch((a) => { a.exercises = a.exercises.map((e) => (e.group === gid ? { ...e, group: null } : e)); return a; });
-
-  /* Übungen zu Anzeige-Blöcken zusammenfassen: gruppierte Übungen bleiben in
-     ihrer Reihenfolge, werden aber als ein Block gerendert. */
-  const renderItems = useMemo(() => {
-    const seen = new Set();
-    const items = [];
-    for (const ex of active.exercises) {
-      if (seen.has(ex.key)) continue;
-      if (ex.group) {
-        const mates = active.exercises.filter((e) => e.group === ex.group);
-        mates.forEach((m) => seen.add(m.key));
-        items.push({ type: "group", group: ex.group, exercises: mates });
-      } else {
-        seen.add(ex.key);
-        items.push({ type: "single", ex });
-      }
-    }
-    return items;
-  }, [active.exercises]);
 
   const startTimer = () => patch((a) => { a.started = true; a.paused = false; a.resumedAt = Date.now(); return a; });
   const togglePause = () => patch((a) => {
