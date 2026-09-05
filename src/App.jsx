@@ -5,6 +5,7 @@ import {
   BarChart, Bar, LineChart, Line, AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine,
 } from "recharts";
 import { createClient } from "../utils/supabase/client.js";
+import QRCode from "qrcode";
 
 /* ============================================================================
    STRADAA — Training, Laufen, Seilspringen
@@ -3746,6 +3747,46 @@ function CommunityScreen({ ctx }) {
   );
 }
 
+/* Eigener QR-Code zum Freunde-hinzufügen: kodiert einen Link zurück auf die
+   App mit ?add=<username>. Jede Handykamera erkennt den Code systemweit und
+   öffnet den Link – kein In-App-Scanner mit Kamerazugriff nötig. Schwarz auf
+   Weiß statt Markenfarben, damit die Erkennung zuverlässig bleibt. */
+function MyQrCodeSheet({ open, onClose, username }) {
+  const T = useT();
+  const canvasRef = useRef(null);
+  const [busy, setBusy] = useState(false);
+  const url = typeof window !== "undefined" ? `${window.location.origin}${window.location.pathname}?add=${encodeURIComponent(username)}` : "";
+
+  useEffect(() => {
+    if (!open || !canvasRef.current) return;
+    QRCode.toCanvas(canvasRef.current, url, { width: 260, margin: 1, color: { dark: "#101218", light: "#FFFFFF" } }).catch(() => {});
+  }, [open, url]);
+
+  const share = async () => {
+    setBusy(true);
+    try {
+      if (navigator.share) await navigator.share({ title: "STRADAA", text: `Füg mich auf STRADAA hinzu: ${username}`, url });
+      else await navigator.clipboard.writeText(url);
+    } catch { /* abgebrochen */ }
+    setBusy(false);
+  };
+
+  return (
+    <Sheet open={open} onClose={onClose} title="Mein QR-Code">
+      <div className="flex flex-col items-center">
+        <div className="p-4 rounded-2xl mb-4" style={{ background: "#FFFFFF" }}>
+          <canvas ref={canvasRef} />
+        </div>
+        <div className="rig-display text-xl mb-1" style={{ color: T.text }}>{username}</div>
+        <div className="text-xs text-center mb-5" style={{ color: T.muted }}>
+          Freunde scannen diesen Code mit der Handykamera, um dir eine Anfrage zu senden.
+        </div>
+        <Btn className="w-full" onClick={share} disabled={busy}>{busy ? "…" : "Teilen"}</Btn>
+      </div>
+    </Sheet>
+  );
+}
+
 /* --- Profil / Einstellungen --------------------------------------------- */
 function ProfileScreen({ ctx }) {
   const T = useT();
@@ -3761,6 +3802,7 @@ function ProfileScreen({ ctx }) {
   const [showVisibility, setShowVisibility] = useState(false);
   const [showPersonal, setShowPersonal] = useState(false);
   const [showAccount, setShowAccount] = useState(false);
+  const [showQr, setShowQr] = useState(false);
   const [editGoals, setEditGoals] = useState(false);
   const avatarFileRef = useRef(null);
   const statusLabel = { unconfigured: "Nicht angemeldet", ok: "Synchronisiert", error: "Sync-Fehler" }[cloudStatus] || "Nicht angemeldet";
@@ -3988,6 +4030,12 @@ function ProfileScreen({ ctx }) {
           </div>
         )}
 
+        <button onClick={() => setShowQr(true)} className="w-full flex items-center gap-3 p-4 text-left" style={{ borderTop: `1px solid ${T.line}` }}>
+          <span>📱</span>
+          <span className="flex-1 text-sm" style={{ color: T.text }}>Mein QR-Code</span>
+          <span className="text-xs" style={{ color: T.muted }}>›</span>
+        </button>
+
         <button onClick={() => setShowAccount((v) => !v)} className="w-full flex items-center gap-3 p-4 text-left" style={{ borderTop: `1px solid ${T.line}` }}>
           <span>⚙️</span>
           <span className="flex-1 text-sm" style={{ color: T.text }}>Konto</span>
@@ -4040,6 +4088,8 @@ function ProfileScreen({ ctx }) {
           <button onClick={() => setConfirmReset(true)} className="text-xs mt-2" style={{ color: T.muted }}>Alle Daten löschen</button>
         )}
       </div>
+
+      <MyQrCodeSheet open={showQr} onClose={() => setShowQr(false)} username={profile.username} />
     </div>
   );
 }
@@ -4150,6 +4200,7 @@ function AppInner() {
   const [tab, setTab] = useState("home");
   const [detail, setDetail] = useState(null);
   const [toastMsg, setToastMsg] = useState(null);
+  const [pendingAddFriend, setPendingAddFriend] = useState(null);
   const [cloudStatusState, setCloudStatusState] = useState("unconfigured");
   const [authSession, setAuthSession] = useState(undefined); // undefined = wird noch geprüft, null = nicht angemeldet
   const [call, setCall] = useState(null); // {room, label, me}
@@ -4185,6 +4236,23 @@ function AppInner() {
     setToastMsg(t);
     setTimeout(() => setToastMsg(null), t.kind === "pr" ? 4200 : 2600);
   }, []);
+
+  /* Freund per QR-Code hinzufügen: der Code kodiert einen Link mit ?add=<username>,
+     jede Handykamera öffnet ihn systemweit – hier wird der Parameter einmal beim
+     Laden ausgewertet und danach aus der URL entfernt. */
+  useEffect(() => {
+    if (!ready || !profile) return;
+    const params = new URLSearchParams(window.location.search);
+    const target = params.get("add");
+    if (!target) return;
+    window.history.replaceState({}, "", window.location.pathname);
+    if (target.toLowerCase() === profile.username.toLowerCase()) return;
+    (async () => {
+      const exists = await Cloud.usernameTaken(target).catch(() => false);
+      if (exists) setPendingAddFriend(target);
+      else toast({ kind: "error", msg: `Nutzer "${target}" wurde nicht gefunden.` });
+    })();
+  }, [ready, profile, toast]);
 
   /* Reiht Toasts strikt nacheinander, statt sich beim gleichzeitigen Auslösen
      mehrerer Effekte (z. B. Abzeichen + Streak-Schutz in derselben Ladung)
@@ -4787,6 +4855,17 @@ function AppInner() {
             </>
           )}
           <CallSheet call={call} onClose={() => setCall(null)} />
+          {profile && (
+            <Sheet open={!!pendingAddFriend} onClose={() => setPendingAddFriend(null)} title="Freund hinzufügen">
+              <div className="text-sm mb-5" style={{ color: T.text }}>
+                Freundschaftsanfrage an <b>{pendingAddFriend}</b> senden?
+              </div>
+              <div className="flex gap-2">
+                <Btn variant="ghost" className="flex-1" onClick={() => setPendingAddFriend(null)}>Abbrechen</Btn>
+                <Btn className="flex-1" onClick={async () => { await sendRequest(pendingAddFriend); setPendingAddFriend(null); }}>Anfrage senden</Btn>
+              </div>
+            </Sheet>
+          )}
           <Toast toast={toastMsg} />
         </div>
       </div>
