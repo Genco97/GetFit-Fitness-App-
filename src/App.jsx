@@ -358,7 +358,7 @@ const S = {
 /* Holt einen kompletten Datensatz aus der Cloud – für Login auf neuem Gerät und
    für den stillen Abgleich beim Start. owner ist die auth.uid() des Kontos. */
 async function pullAll(owner) {
-  const [profile, workouts, runs, ropes, weight, custom, prs, achievements, streak, profileRow] = await Promise.all([
+  const [profile, workouts, runs, ropes, weight, custom, prs, achievements, streak, photos, profileRow] = await Promise.all([
     Cloud.get(K.profile, false, owner).catch(() => null),
     Cloud.get(K.workouts, false, owner).catch(() => null),
     Cloud.get(K.runs, false, owner).catch(() => null),
@@ -368,11 +368,12 @@ async function pullAll(owner) {
     Cloud.get(K.prs, false, owner).catch(() => null),
     Cloud.get(K.achievements, false, owner).catch(() => null),
     Cloud.get(K.streak, false, owner).catch(() => null),
+    Cloud.get(K.photos, false, owner).catch(() => null),
     Cloud.getProfileRow(owner).catch(() => null),
   ]);
   const social = profileRow ? await Cloud.get(K.social(profileRow.username), true, "").catch(() => null) : null;
   const merged = profileRow ? { ...profile, username: profileRow.username, emoji: profileRow.emoji } : profile;
-  return { profile: merged, workouts, runs, ropes, weight, custom, prs, achievements, streak, social };
+  return { profile: merged, workouts, runs, ropes, weight, custom, prs, achievements, streak, photos, social };
 }
 
 const K = {
@@ -385,6 +386,7 @@ const K = {
   prs: "log:prs",
   achievements: "log:achievements",
   streak: "log:streak",
+  photos: "log:photos",
   active: "active:workout",
   board: (u) => `board:${u}`,
   social: (u) => `social:${u}`,
@@ -2118,6 +2120,115 @@ function WeightSection({ ctx }) {
   );
 }
 
+/* Fortschrittsfotos: ein Foto pro Tag, Galerie zum Durchtippen und ein
+   Vorher/Nachher-Vergleich (zwei Fotos antippen). */
+function ProgressPhotosSection({ ctx }) {
+  const T = useT();
+  const { photos, addProgressPhoto, deleteProgressPhoto } = ctx;
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [viewing, setViewing] = useState(null);
+  const [compareMode, setCompareMode] = useState(false);
+  const [compareA, setCompareA] = useState(null);
+  const [compareB, setCompareB] = useState(null);
+  const fileRef = useRef(null);
+
+  const sorted = useMemo(() => [...photos].sort((a, b) => b.date - a.date), [photos]);
+
+  const pickPhoto = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setBusy(true);
+    try {
+      const img = await resizeImageFile(file, 720, 0.7);
+      await addProgressPhoto(img, note.trim());
+      setNote("");
+    } catch { /* Bild ließ sich nicht lesen */ }
+    setBusy(false);
+  };
+
+  const tapPhoto = (p) => {
+    if (!compareMode) { setViewing(p); return; }
+    if (!compareA || (compareA && compareB)) { setCompareA(p); setCompareB(null); return; }
+    if (p.id === compareA.id) return;
+    setCompareB(p);
+  };
+
+  const stopCompare = () => { setCompareMode(false); setCompareA(null); setCompareB(null); };
+
+  return (
+    <Card className="p-4 mb-4">
+      <div className="flex items-center justify-between mb-3">
+        <Eyebrow color={PLATE.blue}>Fortschrittsfotos</Eyebrow>
+        {sorted.length >= 2 && (
+          <button onClick={() => (compareMode ? stopCompare() : setCompareMode(true))}
+            className="text-xs px-3 py-1.5 rounded-lg" style={{ background: compareMode ? PLATE.blue : T.panel2, color: compareMode ? "#fff" : T.text }}>
+            {compareMode ? "Fertig" : "Vergleichen"}
+          </button>
+        )}
+      </div>
+
+      {compareMode && (
+        <div className="text-xs mb-3" style={{ color: T.muted }}>
+          {!compareA ? "Erstes Foto (vorher) antippen" : !compareB ? "Zweites Foto (nachher) antippen" : `${Math.round(Math.abs(compareB.date - compareA.date) / DAY)} Tage dazwischen`}
+        </div>
+      )}
+
+      {compareMode && compareA && compareB && (
+        <div className="grid grid-cols-2 gap-2 mb-4">
+          <div>
+            <img src={compareA.image} alt="" className="w-full rounded-xl" style={{ aspectRatio: "3/4", objectFit: "cover" }} />
+            <div className="text-[10px] text-center mt-1" style={{ color: T.muted }}>{fmtDate(compareA.date)}</div>
+          </div>
+          <div>
+            <img src={compareB.image} alt="" className="w-full rounded-xl" style={{ aspectRatio: "3/4", objectFit: "cover" }} />
+            <div className="text-[10px] text-center mt-1" style={{ color: T.muted }}>{fmtDate(compareB.date)}</div>
+          </div>
+        </div>
+      )}
+
+      {!compareMode && (
+        <div className="flex gap-2 mb-3">
+          <input ref={fileRef} type="file" accept="image/*" hidden onChange={pickPhoto} />
+          <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Notiz (optional)"
+            className="flex-1 px-3 py-2 rounded-lg text-sm" style={{ background: T.panel2, color: T.text, border: `1px solid ${T.line}` }} />
+          <Btn onClick={() => fileRef.current?.click()} disabled={busy}>{busy ? "…" : "📷 Foto"}</Btn>
+        </div>
+      )}
+
+      {sorted.length === 0 ? (
+        <div className="text-xs" style={{ color: T.muted }}>Noch keine Fotos – leg mit dem ersten los, um deinen Fortschritt später zu sehen.</div>
+      ) : (
+        <div className="flex gap-2 overflow-x-auto rig-scroll pb-1">
+          {sorted.map((p) => {
+            const selected = compareMode && (compareA?.id === p.id || compareB?.id === p.id);
+            return (
+              <button key={p.id} onClick={() => tapPhoto(p)} className="shrink-0">
+                <img src={p.image} alt="" className="rounded-xl" style={{
+                  width: 72, height: 96, objectFit: "cover",
+                  border: selected ? `2px solid ${PLATE.blue}` : `1px solid ${T.line}`,
+                }} />
+                <div className="text-[9px] mt-1" style={{ color: T.muted }}>{fmtDayShort(p.date)}</div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      <Sheet open={!!viewing} onClose={() => setViewing(null)} title={viewing ? fmtDate(viewing.date) : ""}>
+        {viewing && (
+          <div>
+            <img src={viewing.image} alt="" className="w-full rounded-xl mb-3" />
+            {viewing.note && <div className="text-sm mb-3" style={{ color: T.text }}>{viewing.note}</div>}
+            <Btn variant="danger" className="w-full" onClick={() => { deleteProgressPhoto(viewing.id); setViewing(null); }}>Foto löschen</Btn>
+          </div>
+        )}
+      </Sheet>
+    </Card>
+  );
+}
+
 function StatsScreen({ ctx }) {
   const T = useT();
   const { workouts, runs, ropes, prs, achievementsUnlocked, go } = ctx;
@@ -2247,6 +2358,8 @@ function StatsScreen({ ctx }) {
       </Card>
 
       <WeightSection ctx={ctx} />
+
+      <ProgressPhotosSection ctx={ctx} />
 
       {exNames.length > 0 && (
         <>
@@ -3398,6 +3511,7 @@ function AppInner() {
   const [prs, setPrs] = useState({});
   const [achievementsUnlocked, setAchievementsUnlocked] = useState({});
   const [streakData, setStreakData] = useState({ freezes: 1, frozenDays: [], grantedWeeks: 0 });
+  const [photos, setPhotos] = useState([]);
   const [active, setActive] = useState(null);
   const [board, setBoard] = useState([]);
   const [social, setSocial] = useState({ friends: [], requests: [] });
@@ -3578,13 +3692,14 @@ function AppInner() {
     (async () => {
       if (authUid === undefined) return; // Session-Check noch nicht abgeschlossen
       if (!authUid) { setProfile(null); setReady(true); return; }
-      const [p, w, r, j, wt, c, pr, ach, sd, a] = await Promise.all([
+      const [p, w, r, j, wt, c, pr, ach, sd, ph, a] = await Promise.all([
         Local.get(K.profile), Local.get(K.workouts), Local.get(K.runs), Local.get(K.ropes),
-        Local.get(K.weight), Local.get(K.custom), Local.get(K.prs), Local.get(K.achievements), Local.get(K.streak), Local.get(K.active),
+        Local.get(K.weight), Local.get(K.custom), Local.get(K.prs), Local.get(K.achievements), Local.get(K.streak),
+        Local.get(K.photos), Local.get(K.active),
       ]);
       setProfile(p); setWorkouts(w || []); setRuns(r || []); setRopes(j || []); setWeightLog(wt || []);
       setCustom(c || []); setPrs(pr || {}); setAchievementsUnlocked(ach || {});
-      setStreakData(sd || { freezes: 1, frozenDays: [], grantedWeeks: 0 }); setActive(a || null);
+      setStreakData(sd || { freezes: 1, frozenDays: [], grantedWeeks: 0 }); setPhotos(ph || []); setActive(a || null);
       if (p) {
         const soc = await Local.get(K.social(p.username), true);
         setSocial(soc || { friends: [], requests: [] });
@@ -3606,6 +3721,7 @@ function AppInner() {
       if (remote?.prs) { setPrs(remote.prs); Local.set(K.prs, remote.prs); }
       if (remote?.achievements) { setAchievementsUnlocked(remote.achievements); Local.set(K.achievements, remote.achievements); }
       if (remote?.streak) { setStreakData(remote.streak); Local.set(K.streak, remote.streak); }
+      if (remote?.photos) { setPhotos(remote.photos); Local.set(K.photos, remote.photos); }
       if (remote?.social) { setSocial(remote.social); Local.set(K.social(remote.profile.username), remote.social, true); }
     })();
   }, [authUid]);
@@ -3625,12 +3741,13 @@ function AppInner() {
     setRopes(data.ropes || []); setWeightLog(data.weight || []); setCustom(data.custom || []); setPrs(data.prs || {});
     setAchievementsUnlocked(data.achievements || {});
     setStreakData(data.streak || { freezes: 1, frozenDays: [], grantedWeeks: 0 });
+    setPhotos(data.photos || []);
     setSocial(data.social || { friends: [], requests: [] });
     await Promise.all([
       Local.set(K.profile, data.profile), Local.set(K.workouts, data.workouts || []),
       Local.set(K.runs, data.runs || []), Local.set(K.ropes, data.ropes || []), Local.set(K.weight, data.weight || []),
       Local.set(K.custom, data.custom || []), Local.set(K.prs, data.prs || {}), Local.set(K.achievements, data.achievements || {}),
-      Local.set(K.streak, data.streak || { freezes: 1, frozenDays: [], grantedWeeks: 0 }),
+      Local.set(K.streak, data.streak || { freezes: 1, frozenDays: [], grantedWeeks: 0 }), Local.set(K.photos, data.photos || []),
       Local.set(K.social(data.profile.username), data.social || { friends: [], requests: [] }, true),
     ]);
     /* Falls die Cloud noch keine (vollständigen) Profil-Einstellungen hatte
@@ -3772,6 +3889,22 @@ function AppInner() {
     const next = weightLog.filter((w) => w.id !== id);
     setWeightLog(next);
     await S.set(K.weight, next, false, owner);
+  };
+
+  /* --- Fortschrittsfotos: ein Foto pro Tag, überschreibt eins vom selben Tag,
+     auf 100 begrenzt, damit die Zeile nicht unbegrenzt wächst. */
+  const addProgressPhoto = async (image, note, date = Date.now()) => {
+    const day = dayKey(date);
+    const next = [{ id: uid(), date, image, note: note || "" }, ...photos.filter((p) => dayKey(p.date) !== day)]
+      .sort((a, b) => b.date - a.date).slice(0, 100);
+    setPhotos(next);
+    await S.set(K.photos, next, false, owner);
+    toast({ msg: "Foto gespeichert." });
+  };
+  const deleteProgressPhoto = async (id) => {
+    const next = photos.filter((p) => p.id !== id);
+    setPhotos(next);
+    await S.set(K.photos, next, false, owner);
   };
 
   /* --- Social --- */
@@ -3964,11 +4097,11 @@ function AppInner() {
   };
   const resetAll = async () => {
     const freshStreak = { freezes: 1, frozenDays: [], grantedWeeks: 0 };
-    setWorkouts([]); setRuns([]); setRopes([]); setWeightLog([]); setPrs({}); setStreakData(freshStreak); setActive(null);
+    setWorkouts([]); setRuns([]); setRopes([]); setWeightLog([]); setPrs({}); setStreakData(freshStreak); setPhotos([]); setActive(null);
     await Promise.all([
       S.set(K.workouts, [], false, owner), S.set(K.runs, [], false, owner), S.set(K.ropes, [], false, owner),
       S.set(K.weight, [], false, owner), S.set(K.prs, {}, false, owner), S.set(K.streak, freshStreak, false, owner),
-      S.set(K.active, null, false, owner),
+      S.set(K.photos, [], false, owner), S.set(K.active, null, false, owner),
     ]);
     await pushBoard(profile, [], [], []);
     toast({ msg: "Alles gelöscht." });
@@ -3981,9 +4114,9 @@ function AppInner() {
   };
 
   const ctx = {
-    profile, workouts, runs, ropes, weightLog, prs, achievementsUnlocked, achievementStats, streak, streakData, active, exercises, board, social, owner,
+    profile, workouts, runs, ropes, weightLog, prs, achievementsUnlocked, achievementStats, streak, streakData, photos, active, exercises, board, social, owner,
     setActive, go, toast, patchProfile, startWorkout, repeatWorkout, finishWorkout, discardWorkout,
-    deleteWorkout, addRun, deleteRun, addRope, deleteRope, addWeightEntry, deleteWeightEntry, addCustomExercise,
+    deleteWorkout, addRun, deleteRun, addRope, deleteRope, addWeightEntry, deleteWeightEntry, addProgressPhoto, deleteProgressPhoto, addCustomExercise,
     refreshBoard, sendRequest, acceptRequest, declineRequest, removeFriend, exportData, resetAll,
     notifications, refreshNotifications, markNotificationsRead, sendMessage, loadChat,
     feed, refreshFeed, addPost, deletePost, toggleLike,
