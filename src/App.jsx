@@ -1560,11 +1560,25 @@ function WorkoutScreen({ ctx }) {
     setPickerOpen(false);
   };
 
+  /* Supersatz/Zirkel: nach einem Satz erst dann die Pause starten, wenn jede
+     Übung der Gruppe in dieser Runde gleichgezogen hat – sonst weiter zur
+     nächsten Übung der Gruppe, ohne Pause dazwischen. */
   const addSet = (key, set) => {
+    const ex = active.exercises.find((e) => e.key === key);
+    const group = ex?.group || null;
     patch((a) => {
       a.exercises = a.exercises.map((e) => (e.key === key ? { ...e, sets: [...e.sets, { id: uid(), ...set }] } : e));
       return a;
     });
+    if (group) {
+      const newCount = ex.sets.length + 1;
+      const mates = active.exercises.filter((e) => e.group === group);
+      const lagging = mates.find((m) => m.key !== key && m.sets.length < newCount);
+      if (lagging) {
+        toast({ msg: `Weiter mit ${lagging.name}.` });
+        return;
+      }
+    }
     setRest({ left: profile.restDefault, total: profile.restDefault });
   };
   const updateSet = (key, sid, set) => patch((a) => {
@@ -1575,7 +1589,48 @@ function WorkoutScreen({ ctx }) {
     a.exercises = a.exercises.map((e) => e.key === key ? { ...e, sets: e.sets.filter((s) => s.id !== sid) } : e);
     return a;
   });
-  const delExercise = (key) => patch((a) => { a.exercises = a.exercises.filter((e) => e.key !== key); return a; });
+  const delExercise = (key) => patch((a) => {
+    a.exercises = a.exercises.filter((e) => e.key !== key);
+    /* Gruppen mit nur noch einer Übung sind kein Supersatz mehr. */
+    const counts = {};
+    a.exercises.forEach((e) => { if (e.group) counts[e.group] = (counts[e.group] || 0) + 1; });
+    a.exercises = a.exercises.map((e) => (e.group && counts[e.group] < 2 ? { ...e, group: null } : e));
+    return a;
+  });
+
+  const [groupMode, setGroupMode] = useState(false);
+  const [groupSelection, setGroupSelection] = useState([]);
+  const toggleGroupSelect = (key) => setGroupSelection((sel) => (sel.includes(key) ? sel.filter((k) => k !== key) : [...sel, key]));
+  const cancelGroupMode = () => { setGroupSelection([]); setGroupMode(false); };
+  const confirmGroup = () => {
+    if (groupSelection.length < 2) return;
+    const gid = uid();
+    patch((a) => {
+      a.exercises = a.exercises.map((e) => (groupSelection.includes(e.key) ? { ...e, group: gid } : e));
+      return a;
+    });
+    setGroupSelection([]); setGroupMode(false);
+  };
+  const ungroup = (gid) => patch((a) => { a.exercises = a.exercises.map((e) => (e.group === gid ? { ...e, group: null } : e)); return a; });
+
+  /* Übungen zu Anzeige-Blöcken zusammenfassen: gruppierte Übungen bleiben in
+     ihrer Reihenfolge, werden aber als ein Block gerendert. */
+  const renderItems = useMemo(() => {
+    const seen = new Set();
+    const items = [];
+    for (const ex of active.exercises) {
+      if (seen.has(ex.key)) continue;
+      if (ex.group) {
+        const mates = active.exercises.filter((e) => e.group === ex.group);
+        mates.forEach((m) => seen.add(m.key));
+        items.push({ type: "group", group: ex.group, exercises: mates });
+      } else {
+        seen.add(ex.key);
+        items.push({ type: "single", ex });
+      }
+    }
+    return items;
+  }, [active.exercises]);
 
   const startTimer = () => patch((a) => { a.started = true; a.paused = false; a.resumedAt = Date.now(); return a; });
   const togglePause = () => patch((a) => {
@@ -1653,13 +1708,41 @@ function WorkoutScreen({ ctx }) {
           <Empty title="Übung hinzufügen" hint="Wähl aus der Datenbank oder leg eine eigene an." />
         )}
 
-        {active.exercises.map((ex) => (
-          <ExerciseBlock key={ex.key} ex={ex} onAdd={(s) => addSet(ex.key, s)} onUpdate={(sid, s) => updateSet(ex.key, sid, s)}
-            onDelete={(sid) => delSet(ex.key, sid)} onRemove={() => delExercise(ex.key)} prs={ctx.prs}
-            lastSession={lastSessionFor(ex.name)} />
+        {renderItems.map((item) => item.type === "single" ? (
+          <ExerciseBlock key={item.ex.key} ex={item.ex} onAdd={(s) => addSet(item.ex.key, s)} onUpdate={(sid, s) => updateSet(item.ex.key, sid, s)}
+            onDelete={(sid) => delSet(item.ex.key, sid)} onRemove={() => delExercise(item.ex.key)} prs={ctx.prs}
+            lastSession={lastSessionFor(item.ex.name)}
+            selectable={groupMode} selected={groupSelection.includes(item.ex.key)} onToggleSelect={() => toggleGroupSelect(item.ex.key)} />
+        ) : (
+          <div key={item.group} className="mb-3 rounded-2xl p-3" style={{ border: `1px solid ${PLATE.blue}55`, background: `linear-gradient(135deg, ${T.panel}, ${PLATE.blue}0d)` }}>
+            <div className="flex items-center justify-between px-1 mb-2">
+              <Eyebrow color={PLATE.blue}>{item.exercises.length > 2 ? "Zirkel" : "Supersatz"} · {item.exercises.length} Übungen</Eyebrow>
+              <button onClick={() => ungroup(item.group)} className="text-xs" style={{ color: T.muted }}>Trennen</button>
+            </div>
+            {item.exercises.map((ex) => (
+              <ExerciseBlock key={ex.key} ex={ex} onAdd={(s) => addSet(ex.key, s)} onUpdate={(sid, s) => updateSet(ex.key, sid, s)}
+                onDelete={(sid) => delSet(ex.key, sid)} onRemove={() => delExercise(ex.key)} prs={ctx.prs}
+                lastSession={lastSessionFor(ex.name)} />
+            ))}
+          </div>
         ))}
 
-        <Btn variant="ghost" className="w-full mt-2" onClick={() => setPickerOpen(true)}>+ Übung hinzufügen</Btn>
+        {groupMode ? (
+          <Card className="p-3 mt-2 flex items-center justify-between">
+            <span className="text-sm" style={{ color: T.text }}>{groupSelection.length} ausgewählt</span>
+            <div className="flex gap-2">
+              <Btn variant="ghost" onClick={cancelGroupMode}>Abbrechen</Btn>
+              <Btn disabled={groupSelection.length < 2} onClick={confirmGroup}>Verknüpfen</Btn>
+            </div>
+          </Card>
+        ) : (
+          <div className="flex gap-2 mt-2">
+            <Btn variant="ghost" className="flex-1" onClick={() => setPickerOpen(true)}>+ Übung hinzufügen</Btn>
+            {active.exercises.filter((e) => !e.group).length >= 2 && (
+              <Btn variant="ghost" onClick={() => setGroupMode(true)}>🔗 Verknüpfen</Btn>
+            )}
+          </div>
+        )}
 
         <div className="mt-6 flex gap-2">
           <Btn variant="danger" className="flex-1" onClick={discardWorkout}>Training verwerfen</Btn>
@@ -1690,7 +1773,7 @@ function WorkoutScreen({ ctx }) {
   );
 }
 
-function ExerciseBlock({ ex, onAdd, onUpdate, onDelete, onRemove, prs, lastSession }) {
+function ExerciseBlock({ ex, onAdd, onUpdate, onDelete, onRemove, prs, lastSession, selectable, selected, onToggleSelect }) {
   const T = useT();
   const last = ex.sets[ex.sets.length - 1];
   const lastRef = lastSession?.sets[lastSession.sets.length - 1];
@@ -1718,6 +1801,26 @@ function ExerciseBlock({ ex, onAdd, onUpdate, onDelete, onRemove, prs, lastSessi
   };
 
   const typeIcon = ex.type === "weight" ? "🏋️" : ex.type === "time" ? "⏱️" : "🤸";
+
+  /* Auswahl-Modus fürs Verknüpfen zu einem Supersatz/Zirkel: nur Kopfzeile +
+     Checkbox, keine Satz-Eingabe, damit man beim Auswählen nichts versehentlich einträgt. */
+  if (selectable) {
+    return (
+      <Card className="p-4 mb-3" onClick={onToggleSelect} style={selected ? { border: `2px solid ${PLATE.blue}` } : undefined}>
+        <div className="flex items-center gap-3">
+          <span className="w-10 h-10 rounded-xl flex items-center justify-center text-base shrink-0" style={{ background: T.panel2 }}>{typeIcon}</span>
+          <div className="flex-1" style={{ minWidth: 0 }}>
+            <div className="rig-display text-lg truncate" style={{ color: T.text }}>{ex.name}</div>
+            <div className="text-xs" style={{ color: T.muted }}>{ex.sets.length} Sätze bisher</div>
+          </div>
+          <span className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 text-xs"
+            style={{ background: selected ? PLATE.blue : T.panel2, color: selected ? "#fff" : T.muted, border: `1px solid ${T.line}` }}>
+            {selected ? "✓" : ""}
+          </span>
+        </div>
+      </Card>
+    );
+  }
 
   return (
     <Card className="p-4 mb-3">
