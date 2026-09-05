@@ -1659,6 +1659,42 @@ function ExercisePicker({ open, onClose, exercises, onPick, onCreate }) {
   );
 }
 
+/* Echte Kartenansicht (OpenStreetMap über Leaflet). Leaflet greift auf window/
+   document zu, deshalb erst im Browser per dynamischem Import laden – ein
+   normaler Top-Level-Import würde den Server-seitigen Build zum Absturz bringen. */
+function LeafletMap({ path, live, height = 200 }) {
+  const T = useT();
+  const containerRef = useRef(null);
+  const mapRef = useRef(null);
+  const lineRef = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    import("leaflet").then((L) => {
+      if (cancelled || !containerRef.current || mapRef.current) return;
+      const start = path[0] || [48.2082, 16.3738];
+      const map = L.map(containerRef.current, { zoomControl: false, attributionControl: false }).setView(start, 15);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19 }).addTo(map);
+      lineRef.current = L.polyline(path, { color: PLATE.blue, weight: 4 }).addTo(map);
+      mapRef.current = map;
+      if (path.length > 1) map.fitBounds(lineRef.current.getBounds(), { padding: [24, 24] });
+    });
+    return () => { cancelled = true; if (mapRef.current) { mapRef.current.remove(); mapRef.current = null; } };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!mapRef.current || !lineRef.current) return;
+    lineRef.current.setLatLngs(path);
+    if (path.length) {
+      if (live) mapRef.current.panTo(path[path.length - 1]);
+      else mapRef.current.fitBounds(lineRef.current.getBounds(), { padding: [24, 24] });
+    }
+  }, [path, live]);
+
+  return <div ref={containerRef} style={{ height, borderRadius: 16, background: T.panel2 }} />;
+}
+
 /* --- Lauf-Tracker ------------------------------------------------------- */
 function RunScreen({ ctx }) {
   const T = useT();
@@ -1670,6 +1706,7 @@ function RunScreen({ ctx }) {
   const [speed, setSpeed] = useState(0);
   const [gpsErr, setGpsErr] = useState("");
   const [manual, setManual] = useState(false);
+  const [viewingRoute, setViewingRoute] = useState(null);
   const [mKm, setMKm] = useState(5);
   const [mMin, setMMin] = useState(30);
   const watchId = useRef(null);
@@ -1788,7 +1825,11 @@ function RunScreen({ ctx }) {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  {r.path?.length > 3 && <RouteTrace path={r.path} color={PLATE.blue} w={64} h={40} />}
+                  {r.path?.length > 3 && (
+                    <button onClick={() => setViewingRoute(r)}>
+                      <RouteTrace path={r.path} color={PLATE.blue} w={64} h={40} />
+                    </button>
+                  )}
                   <button onClick={() => deleteRun(r.id)} className="text-xs px-2 py-1" style={{ color: PLATE.red }}>✕</button>
                 </div>
               </div>
@@ -1812,9 +1853,9 @@ function RunScreen({ ctx }) {
           </Card>
 
           {pts.length > 3 && (
-            <Card className="p-4 mb-4">
-              <Eyebrow>Streckenverlauf</Eyebrow>
-              <RouteTrace path={pts.map((p) => [p.lat, p.lng])} color={PLATE.blue} w={340} h={160} full />
+            <Card className="p-2 mb-4">
+              <div className="px-2 pt-1 pb-2"><Eyebrow>Streckenverlauf</Eyebrow></div>
+              <LeafletMap path={pts.map((p) => [p.lat, p.lng])} live height={220} />
             </Card>
           )}
 
@@ -1854,6 +1895,18 @@ function RunScreen({ ctx }) {
           Pace: {paceStr(mMin * 60, mKm)} min/km
         </div>
         <Btn tone={PLATE.blue} className="w-full" onClick={saveManual}>Lauf speichern</Btn>
+      </Sheet>
+
+      <Sheet open={!!viewingRoute} onClose={() => setViewingRoute(null)} title={viewingRoute ? `${Number(viewingRoute.distanceKm).toFixed(2)} km` : "Strecke"}>
+        {viewingRoute && (
+          <>
+            <LeafletMap path={viewingRoute.path} height={280} />
+            <div className="flex items-center justify-between mt-4 text-xs rig-num" style={{ color: T.muted }}>
+              <span>{new Date(viewingRoute.date).toLocaleDateString("de-AT")}</span>
+              <span>{paceStr(viewingRoute.durationSec, viewingRoute.distanceKm)} min/km</span>
+            </div>
+          </>
+        )}
       </Sheet>
     </div>
   );
